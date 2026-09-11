@@ -2,7 +2,6 @@
 
 from _access import AccessIdentity
 from _attempt import AttemptToken
-from _managed.adapter import Adapter
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
     AcquireAccessMismatch,
@@ -30,7 +29,6 @@ __all__ = [
     "AcquireExisting",
     "AcquireResult",
     "AcquireSuperseded",
-    "Adapter",
     "AttemptToken",
     "Current",
     "GenerationMismatch",

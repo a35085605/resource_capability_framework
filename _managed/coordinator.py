@@ -4,8 +4,9 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, Hashable, TypeVar
 
+from _access import AccessIdentity
 from _attempt import AttemptToken
-from _managed.adapter import Adapter
+from _capability.projection import CapabilityProjection
 from _managed.result import (
     AcquireAccessMismatch,
     AcquireBusy,
@@ -47,24 +48,22 @@ class ManagedCoordinator(
     def __init__(
         self,
         issue_generation: Callable[[], GenerationT],
-        adapter: Adapter[AccessT, AccessKeyT, ResourceT, CapabilityT],
+        access_identity: AccessIdentity[AccessT, AccessKeyT],
+        resource_manager: ResourceManagement[AccessT, ResourceT],
+        capability_projection: CapabilityProjection[
+            AccessT, ResourceT, CapabilityT
+        ],
     ) -> None:
         if not callable(issue_generation):
             raise TypeError("issue_generation must be callable")
         self._issue_generation = issue_generation
-        self._adapter = adapter
+        self._access_identity = access_identity
+        self._resource_manager = resource_manager
+        self._capability_projection = capability_projection
         self._lock = Lock()
         self._state: ManagedState[GenerationT, AccessT, AccessKeyT, CapabilityT] = (
             Idle(issue_generation())
         )
-
-    @property
-    def adapter(self) -> Adapter[AccessT, AccessKeyT, ResourceT, CapabilityT]:
-        return self._adapter
-
-    @property
-    def resource_manager(self) -> ResourceManagement[AccessT, ResourceT]:
-        return self._adapter.resource_manager
 
     def read(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
         with self._lock:
@@ -108,7 +107,7 @@ class ManagedCoordinator(
                 attempt,
             )
 
-        manager = self._adapter.resource_manager
+        manager = self._resource_manager
         try:
             result = manager.acquire(attempt, access)
 
@@ -134,7 +133,7 @@ class ManagedCoordinator(
             if not isinstance(result, ResourceAcquired):
                 raise RuntimeError("unsupported ResourceManagement acquire result")
 
-            capability = self._adapter.capability_projection.project(
+            capability = self._capability_projection.project(
                 access,
                 result.resources,
             )
@@ -224,18 +223,13 @@ class ManagedCoordinator(
         # Detach Managed authority before physical interruption/cleanup.
         assert attempt is not None
         assert next_generation is not None
-        self._adapter.resource_manager.release(attempt)
+        self._resource_manager.release(attempt)
         if preparing:
             return ReleaseAcquisitionRevoked(next_generation)
         return ReleaseDetached(next_generation)
 
-    def cleanup_retired(self, access: AccessT) -> bool:
-        if access is None:
-            raise TypeError("access cannot be None")
-        return self._adapter.resource_manager.cleanup_retired(access)
-
     def _access_key(self, access: AccessT) -> AccessKeyT:
-        access_key = self._adapter.access_identity.key(access)
+        access_key = self._access_identity.key(access)
         if access_key is None:
             raise TypeError("AccessIdentity.key() cannot return None")
         try:
