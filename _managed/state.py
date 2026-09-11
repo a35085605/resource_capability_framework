@@ -1,60 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from threading import Event, Lock
+from dataclasses import dataclass
 from typing import Generic, Hashable, TypeAlias, TypeVar
 
-from _resource.manager import ResourceAcquisition
-from _resource.pool import ResourceLease
+from _attempt import AttemptToken
 
 
 GenerationT = TypeVar("GenerationT")
 AccessT = TypeVar("AccessT")
-SpecT = TypeVar("SpecT")
-ResourceT = TypeVar("ResourceT")
+AccessKeyT = TypeVar("AccessKeyT", bound=Hashable)
 CapabilityT = TypeVar("CapabilityT")
-
-
-@dataclass(slots=True, eq=False)
-class ManagedAttempt(Generic[GenerationT, AccessT]):
-    """Coordinator-owned state for one in-flight Access authority attempt.
-
-    ``revoke`` removes capability commit authority immediately. Physical resource
-    interruption is deliberately separate and is delegated through the opaque
-    acquisition handle held by ``Preparing``.
-    """
-
-    generation: GenerationT
-    access: AccessT
-    _cancellation: Event = field(default_factory=Event, init=False, repr=False)
-    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
-    _revoked: bool = field(default=False, init=False, repr=False)
-    _finished: bool = field(default=False, init=False, repr=False)
-
-    @property
-    def cancellation(self) -> Event:
-        return self._cancellation
-
-    @property
-    def revoked(self) -> bool:
-        with self._lock:
-            return self._revoked
-
-    @property
-    def finished(self) -> bool:
-        with self._lock:
-            return self._finished
-
-    def revoke(self) -> None:
-        with self._lock:
-            if self._revoked:
-                return
-            self._revoked = True
-            self._cancellation.set()
-
-    def finish(self) -> None:
-        with self._lock:
-            self._finished = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,28 +18,27 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
-class Preparing(Generic[GenerationT, AccessT, SpecT, ResourceT]):
+class Preparing(Generic[GenerationT, AccessT, AccessKeyT]):
     generation: GenerationT
     access: AccessT
-    access_key: Hashable
-    attempt: ManagedAttempt[GenerationT, AccessT]
-    acquisition: ResourceAcquisition[SpecT, ResourceT] | None = None
+    access_key: AccessKeyT
+    attempt: AttemptToken
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, AccessT, SpecT, ResourceT, CapabilityT]):
+class Current(Generic[GenerationT, AccessT, AccessKeyT, CapabilityT]):
     generation: GenerationT
     access: AccessT
-    access_key: Hashable
+    access_key: AccessKeyT
     capability: CapabilityT
-    resource_lease: ResourceLease[Hashable, SpecT, ResourceT]
+    attempt: AttemptToken
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
-    | Preparing[GenerationT, AccessT, SpecT, ResourceT]
-    | Current[GenerationT, AccessT, SpecT, ResourceT, CapabilityT]
+    | Preparing[GenerationT, AccessT, AccessKeyT]
+    | Current[GenerationT, AccessT, AccessKeyT, CapabilityT]
 )
 
 
-__all__ = ["Current", "Idle", "ManagedAttempt", "ManagedState", "Preparing"]
+__all__ = ["Current", "Idle", "ManagedState", "Preparing"]

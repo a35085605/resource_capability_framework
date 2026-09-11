@@ -1,32 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import count
 from threading import Lock
 from typing import Any, Generic, Hashable, TypeVar
 
+from _attempt import AttemptToken
 from _resource.driver import ResourceSet
 from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 
 
-AccessKeyT = TypeVar("AccessKeyT")
+AccessKeyT = TypeVar("AccessKeyT", bound=Hashable)
 SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class RequestId:
-    """Pool-local identity for exactly one Access resource acquisition attempt."""
-
-    value: int
-
-
 @dataclass(frozen=True, slots=True)
 class ResourceRequestRecord(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Immutable point-in-time view of one Access resource request."""
+    """Immutable point-in-time view of one attempt still being acquired."""
 
-    request_id: RequestId
+    attempt: AttemptToken
     access_key: AccessKeyT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT] | None
@@ -36,49 +29,29 @@ class ResourceRequestRecord(Generic[AccessKeyT, SpecT, ResourceT]):
 
 @dataclass(frozen=True, slots=True)
 class ResourceRecord(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Immutable point-in-time view of one retained Access ResourceSet."""
+    """Immutable point-in-time view of one retained or retired attempt."""
 
+    attempt: AttemptToken
     access_key: AccessKeyT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     retired: bool = False
-    request_id: RequestId | None = None
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class ResourceRequest(Generic[AccessKeyT, SpecT]):
-    """Identity token for one Pool-tracked Access resource request."""
-
-    request_id: RequestId
-    access_key: AccessKeyT
-    requirements: ResourceRequirements[SpecT]
-    _request_token: object
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class ResourceLease(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Identity token retaining one installed Access ResourceSet."""
-
-    access_key: AccessKeyT
-    requirements: ResourceRequirements[SpecT]
-    resources: ResourceSet[ResourceT]
-    _record_token: object
 
 
 @dataclass(frozen=True, slots=True, eq=False)
 class RetiredResource(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Exact retired record that remains retained until cleanup succeeds."""
+    """Exact retired attempt retained until physical cleanup succeeds."""
 
+    attempt: AttemptToken
     access_key: AccessKeyT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
-    _record_token: object
-    request_id: RequestId | None = None
+    _owner: object
 
 
 @dataclass(frozen=True, slots=True)
-class RequestInterruption(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Result of asking one Access resource request to stop."""
+class AttemptRelease(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Result of asking one attempt to stop or release its retained resources."""
 
     processing: bool
     retired: RetiredResource[AccessKeyT, SpecT, ResourceT] | None = None
@@ -86,10 +59,10 @@ class RequestInterruption(Generic[AccessKeyT, SpecT, ResourceT]):
 
 @dataclass(slots=True)
 class _RequestState(Generic[AccessKeyT, SpecT, ResourceT]):
-    request_id: RequestId
+    owner: object
+    attempt: AttemptToken
     access_key: AccessKeyT
     requirements: ResourceRequirements[SpecT]
-    token: object
     resources: ResourceSet[ResourceT] | None = None
     interrupted: bool = False
     processing: bool = True
@@ -97,35 +70,40 @@ class _RequestState(Generic[AccessKeyT, SpecT, ResourceT]):
 
 @dataclass(slots=True)
 class _RecordState(Generic[AccessKeyT, SpecT, ResourceT]):
+    owner: object
+    attempt: AttemptToken
     access_key: AccessKeyT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
-    token: object
-    request_id: RequestId | None = None
     retired: bool = False
 
 
 class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
-    """Process-wide registry for Access-keyed Resource requests and leases.
+    """Process-wide registry keyed by the caller-supplied acquisition attempt.
 
-    Resource identity is ``ResourceRequirement.spec`` from the implementation's
-    Access plan. Policy is considered only when the same Access key asks for the
-    same Resource spec:
-
-    * BLOCKING: the Resource cannot coexist with another matching Resource.
-    * NON_BLOCKING: matching Resources may be acquired independently.
-
-    Conflict is determined by the Resource that already exists: an existing
-    BLOCKING Resource blocks another matching request, while an existing
-    NON_BLOCKING Resource does not. Different Access keys never conflict here.
-    Retired records remain conflict-visible until physical cleanup succeeds.
+    Conflict checking and reservation are one atomic operation.  ``AttemptToken``
+    identifies the same acquisition from reservation through retained/retired
+    resource state; manager ownership remains a separate invariant.
     """
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._request_ids = count(1)
-        self._records: list[_RecordState[AccessKeyT, SpecT, ResourceT]] = []
-        self._requests: list[_RequestState[AccessKeyT, SpecT, ResourceT]] = []
+        self._records: dict[
+            AttemptToken, _RecordState[AccessKeyT, SpecT, ResourceT]
+        ] = {}
+        self._requests: dict[
+            AttemptToken, _RequestState[AccessKeyT, SpecT, ResourceT]
+        ] = {}
+
+    @staticmethod
+    def _validate_owner(owner: object) -> None:
+        if owner is None:
+            raise TypeError("owner cannot be None")
+
+    @staticmethod
+    def _validate_attempt(attempt: AttemptToken) -> None:
+        if not isinstance(attempt, AttemptToken):
+            raise TypeError("attempt must be AttemptToken")
 
     @staticmethod
     def _validate_access_key(access_key: AccessKeyT) -> None:
@@ -153,29 +131,25 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         return requirements
 
     def snapshot(self) -> tuple[ResourceRecord[AccessKeyT, SpecT, ResourceT], ...]:
-        """Return immutable views of every retained Access ResourceSet."""
-
         with self._lock:
             return tuple(
                 ResourceRecord(
+                    state.attempt,
                     state.access_key,
                     state.requirements,
                     state.resources,
                     state.retired,
-                    state.request_id,
                 )
-                for state in self._records
+                for state in self._records.values()
             )
 
     def request_snapshot(
         self,
-        request: ResourceRequest[AccessKeyT, SpecT],
+        attempt: AttemptToken,
     ) -> ResourceRequestRecord[AccessKeyT, SpecT, ResourceT] | None:
-        """Return the current request view, or ``None`` after it is consumed."""
-
-        self._validate_request(request)
+        self._validate_attempt(attempt)
         with self._lock:
-            state = self._find_request_locked(request)
+            state = self._requests.get(attempt)
             if state is None:
                 return None
             return self._request_record_locked(state)
@@ -183,25 +157,23 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
     def requests(
         self,
     ) -> tuple[ResourceRequestRecord[AccessKeyT, SpecT, ResourceT], ...]:
-        """Return immutable views of all requests not yet installed or retired."""
-
         with self._lock:
-            return tuple(self._request_record_locked(state) for state in self._requests)
+            return tuple(
+                self._request_record_locked(state) for state in self._requests.values()
+            )
 
     def lookup(
         self,
         access_key: AccessKeyT,
         spec: SpecT,
     ) -> tuple[ResourceSet[ResourceT], ...]:
-        """Return active ResourceSets containing one Access-keyed Resource spec."""
-
         self._validate_access_key(access_key)
         if spec is None:
             raise TypeError("spec cannot be None")
         with self._lock:
             return tuple(
                 state.resources
-                for state in self._records
+                for state in self._records.values()
                 if state.access_key == access_key
                 and not state.retired
                 and self._contains_spec(state.requirements, spec)
@@ -209,133 +181,114 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
 
     def retired(
         self,
+        owner: object,
         access_key: AccessKeyT,
         requirements: ResourceRequirements[SpecT],
     ) -> tuple[RetiredResource[AccessKeyT, SpecT, ResourceT], ...]:
-        """Return retired records matching one Access key and Resource spec set."""
-
+        self._validate_owner(owner)
         self._validate_access_key(access_key)
         normalized = self._validate_requirements(requirements)
 
         with self._lock:
             return tuple(
-                RetiredResource(
-                    state.access_key,
-                    state.requirements,
-                    state.resources,
-                    state.token,
-                    state.request_id,
-                )
-                for state in self._records
-                if state.access_key == access_key
+                self._retired_view(state)
+                for state in self._records.values()
+                if state.owner is owner
+                and state.access_key == access_key
                 and state.retired
                 and self._same_spec_set(state.requirements, normalized)
             )
 
     def reserve(
         self,
+        owner: object,
+        attempt: AttemptToken,
         access_key: AccessKeyT,
         requirements: ResourceRequirements[SpecT],
-    ) -> ResourceRequest[AccessKeyT, SpecT] | None:
-        """Atomically reserve every Resource required by one Access.
+    ) -> bool:
+        """Atomically conflict-check and reserve every Resource for ``attempt``."""
 
-        ``None`` means at least one Resource conflicts with a retained, retired, or
-        processing Resource for the same Access key. NON_BLOCKING Resources never
-        reuse an existing ResourceSet; a successful reserve always creates a fresh
-        request.
-        """
-
+        self._validate_owner(owner)
+        self._validate_attempt(attempt)
         self._validate_access_key(access_key)
         normalized = self._validate_requirements(requirements)
 
         with self._lock:
-            for state in self._records:
+            if attempt in self._requests or attempt in self._records:
+                raise RuntimeError("attempt is already registered in this pool")
+
+            for state in self._records.values():
                 if state.access_key == access_key and self._conflicts(
                     state.requirements, normalized
                 ):
-                    return None
-            for state in self._requests:
+                    return False
+            for state in self._requests.values():
                 if state.access_key == access_key and self._conflicts(
                     state.requirements, normalized
                 ):
-                    return None
-            return self._reserve_locked(access_key, normalized)
+                    return False
 
-    def _reserve_locked(
-        self,
-        access_key: AccessKeyT,
-        requirements: ResourceRequirements[SpecT],
-    ) -> ResourceRequest[AccessKeyT, SpecT]:
-        request_id = RequestId(next(self._request_ids))
-        token = object()
-        state = _RequestState(
-            request_id=request_id,
-            access_key=access_key,
-            requirements=requirements,
-            token=token,
-        )
-        self._requests.append(state)
-        return ResourceRequest(request_id, access_key, requirements, token)
-
-    def is_interrupted(self, request: ResourceRequest[AccessKeyT, SpecT]) -> bool:
-        """Return whether the request should stop; stale requests are stopped."""
-
-        self._validate_request(request)
-        with self._lock:
-            state = self._find_request_locked(request)
-            return True if state is None else state.interrupted
+            self._requests[attempt] = _RequestState(
+                owner=owner,
+                attempt=attempt,
+                access_key=access_key,
+                requirements=normalized,
+            )
+            return True
 
     def publish(
         self,
-        request: ResourceRequest[AccessKeyT, SpecT],
+        owner: object,
+        attempt: AttemptToken,
         resources: ResourceSet[ResourceT],
     ) -> None:
-        """Publish the current aggregate ResourceSet while processing."""
-
-        self._validate_request(request)
-        if resources is None:
-            raise TypeError("resources cannot be None")
-        if not isinstance(resources, tuple):
-            raise TypeError("resources must be a ResourceSet tuple")
+        self._validate_resources(resources)
         with self._lock:
-            state = self._require_request_locked(request)
+            state = self._require_request_locked(owner, attempt)
             if not state.processing:
-                raise RuntimeError("resource request is no longer processing")
+                raise RuntimeError("resource attempt is no longer processing")
             state.resources = resources
 
-    def interrupt(
+    def release(
         self,
-        request: ResourceRequest[AccessKeyT, SpecT],
-    ) -> RequestInterruption[AccessKeyT, SpecT, ResourceT]:
-        """Mark a request interrupted without pretending its producers stopped."""
+        owner: object,
+        attempt: AttemptToken,
+    ) -> AttemptRelease[AccessKeyT, SpecT, ResourceT]:
+        """Idempotently request stop/release for any current phase of ``attempt``."""
 
-        self._validate_request(request)
+        self._validate_owner(owner)
+        self._validate_attempt(attempt)
         with self._lock:
-            state = self._find_request_locked(request)
-            if state is None:
-                return RequestInterruption(processing=False)
+            request = self._requests.get(attempt)
+            if request is not None:
+                self._require_owner(request.owner, owner)
+                request.interrupted = True
+                if request.processing:
+                    return AttemptRelease(processing=True)
+                retired = self._retire_request_locked(request)
+                return AttemptRelease(processing=False, retired=retired)
 
-            state.interrupted = True
-            if state.processing:
-                return RequestInterruption(processing=True)
-
-            retired = self._retire_request_locked(state)
-            return RequestInterruption(processing=False, retired=retired)
+            record = self._records.get(attempt)
+            if record is None:
+                return AttemptRelease(processing=False)
+            self._require_owner(record.owner, owner)
+            record.retired = True
+            return AttemptRelease(processing=False, retired=self._retired_view(record))
 
     def finish(
         self,
-        request: ResourceRequest[AccessKeyT, SpecT],
+        owner: object,
+        attempt: AttemptToken,
         resources: ResourceSet[ResourceT] | None = None,
     ) -> RetiredResource[AccessKeyT, SpecT, ResourceT] | None:
-        """Atomically publish the final aggregate snapshot and end processing."""
+        """Publish the final snapshot and end physical processing for ``attempt``."""
 
-        self._validate_request(request)
-        if resources is not None and not isinstance(resources, tuple):
-            raise TypeError("resources must be a ResourceSet tuple")
+        if resources is not None:
+            self._validate_resources(resources)
         with self._lock:
-            state = self._require_request_locked(request)
+            state = self._require_request_locked(owner, attempt)
             if not state.processing:
-                raise RuntimeError("resource request is already finished")
+                raise RuntimeError("resource attempt is already finished")
             if resources is not None:
                 state.resources = resources
             state.processing = False
@@ -343,135 +296,83 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
                 return self._retire_request_locked(state)
             return None
 
-    def cancel(self, request: ResourceRequest[AccessKeyT, SpecT]) -> bool:
-        """Cancel a reserved request before any physical Resource is published."""
+    def cancel(self, owner: object, attempt: AttemptToken) -> bool:
+        """Cancel a reservation that has not published any Resource yet."""
 
-        self._validate_request(request)
+        self._validate_owner(owner)
+        self._validate_attempt(attempt)
         with self._lock:
-            state = self._find_request_locked(request)
+            state = self._requests.get(attempt)
             if state is None:
                 return False
+            self._require_owner(state.owner, owner)
             if state.resources is not None:
-                raise RuntimeError("cannot cancel a request that already has resources")
-            self._requests.remove(state)
+                raise RuntimeError("cannot cancel an attempt that already has resources")
+            del self._requests[attempt]
             return True
 
-    def install(
-        self,
-        request: ResourceRequest[AccessKeyT, SpecT],
-    ) -> ResourceLease[AccessKeyT, SpecT, ResourceT]:
-        """Consume one finished request and retain its aggregate ResourceSet."""
+    def install(self, owner: object, attempt: AttemptToken) -> None:
+        """Move one finished attempt into retained Resource state."""
 
-        self._validate_request(request)
         with self._lock:
-            state = self._require_request_locked(request)
+            state = self._require_request_locked(owner, attempt)
             if state.processing:
-                raise RuntimeError("resource request is still processing")
+                raise RuntimeError("resource attempt is still processing")
             if state.interrupted:
-                raise RuntimeError("interrupted resource request cannot be installed")
+                raise RuntimeError("interrupted resource attempt cannot be installed")
             if state.resources is None:
-                raise RuntimeError("resource request has no final resources")
+                raise RuntimeError("resource attempt has no final resources")
 
-            token = object()
-            record = _RecordState(
+            self._records[attempt] = _RecordState(
+                owner=state.owner,
+                attempt=state.attempt,
                 access_key=state.access_key,
                 requirements=state.requirements,
                 resources=state.resources,
-                token=token,
-                request_id=state.request_id,
             )
-            self._records.append(record)
-            self._requests.remove(state)
-            return ResourceLease(
-                record.access_key,
-                record.requirements,
-                record.resources,
-                record.token,
-            )
-
-    def retire(
-        self,
-        lease: ResourceLease[AccessKeyT, SpecT, ResourceT],
-    ) -> RetiredResource[AccessKeyT, SpecT, ResourceT]:
-        """Release one lease and transfer its ResourceSet to cleanup ownership."""
-
-        if not isinstance(lease, ResourceLease):
-            raise TypeError("lease must be ResourceLease")
-
-        with self._lock:
-            state = next(
-                (state for state in self._records if state.token is lease._record_token),
-                None,
-            )
-            if state is None:
-                raise RuntimeError("resource lease is not retained")
-            if state.retired:
-                raise RuntimeError("resource lease is already retired")
-            if state.resources is not lease.resources:
-                raise RuntimeError("resource lease does not match retained resources")
-
-            state.retired = True
-            return RetiredResource(
-                state.access_key,
-                state.requirements,
-                state.resources,
-                state.token,
-                state.request_id,
-            )
+            del self._requests[attempt]
 
     def discard(
         self,
         retired: RetiredResource[AccessKeyT, SpecT, ResourceT],
     ) -> None:
-        """Forget one exact retired record after physical cleanup succeeds."""
-
         if not isinstance(retired, RetiredResource):
             raise TypeError("retired must be RetiredResource")
 
         with self._lock:
-            record_index = next(
-                (
-                    index
-                    for index, state in enumerate(self._records)
-                    if state.token is retired._record_token
-                ),
-                None,
-            )
-            if record_index is None:
+            state = self._records.get(retired.attempt)
+            if state is None:
                 raise RuntimeError("retired resource is not retained")
-            state = self._records[record_index]
+            self._require_owner(state.owner, retired._owner)
             if state.resources is not retired.resources:
                 raise RuntimeError("retired resource does not match retained resources")
             if not state.retired:
                 raise RuntimeError("resource set must be retired before discard")
-            del self._records[record_index]
+            del self._records[retired.attempt]
 
     @staticmethod
-    def _validate_request(request: ResourceRequest[AccessKeyT, SpecT]) -> None:
-        if not isinstance(request, ResourceRequest):
-            raise TypeError("request must be ResourceRequest")
+    def _validate_resources(resources: ResourceSet[ResourceT]) -> None:
+        if resources is None:
+            raise TypeError("resources cannot be None")
+        if not isinstance(resources, tuple):
+            raise TypeError("resources must be a ResourceSet tuple")
 
-    def _find_request_locked(
-        self,
-        request: ResourceRequest[AccessKeyT, SpecT],
-    ) -> _RequestState[AccessKeyT, SpecT, ResourceT] | None:
-        return next(
-            (
-                state
-                for state in self._requests
-                if state.token is request._request_token
-                and state.request_id == request.request_id
-            ),
-            None,
-        )
+    @staticmethod
+    def _require_owner(actual: object, expected: object) -> None:
+        if actual is not expected:
+            raise RuntimeError("resource attempt belongs to another manager")
 
     def _require_request_locked(
         self,
-        request: ResourceRequest[AccessKeyT, SpecT],
+        owner: object,
+        attempt: AttemptToken,
     ) -> _RequestState[AccessKeyT, SpecT, ResourceT]:
-        state = self._find_request_locked(request)
+        self._validate_owner(owner)
+        self._validate_attempt(attempt)
+        state = self._requests.get(attempt)
         if state is None:
-            raise RuntimeError("resource request is not current")
+            raise RuntimeError("resource attempt is not current")
+        self._require_owner(state.owner, owner)
         return state
 
     @staticmethod
@@ -479,7 +380,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         state: _RequestState[AccessKeyT, SpecT, ResourceT],
     ) -> ResourceRequestRecord[AccessKeyT, SpecT, ResourceT]:
         return ResourceRequestRecord(
-            state.request_id,
+            state.attempt,
             state.access_key,
             state.requirements,
             state.resources,
@@ -491,26 +392,31 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         self,
         state: _RequestState[AccessKeyT, SpecT, ResourceT],
     ) -> RetiredResource[AccessKeyT, SpecT, ResourceT] | None:
-        self._requests.remove(state)
+        del self._requests[state.attempt]
         if state.resources is None:
             return None
 
-        token = object()
         record = _RecordState(
+            owner=state.owner,
+            attempt=state.attempt,
             access_key=state.access_key,
             requirements=state.requirements,
             resources=state.resources,
-            token=token,
-            request_id=state.request_id,
             retired=True,
         )
-        self._records.append(record)
+        self._records[state.attempt] = record
+        return self._retired_view(record)
+
+    @staticmethod
+    def _retired_view(
+        state: _RecordState[AccessKeyT, SpecT, ResourceT],
+    ) -> RetiredResource[AccessKeyT, SpecT, ResourceT]:
         return RetiredResource(
-            record.access_key,
-            record.requirements,
-            record.resources,
-            record.token,
-            record.request_id,
+            state.attempt,
+            state.access_key,
+            state.requirements,
+            state.resources,
+            state.owner,
         )
 
     @staticmethod
@@ -548,13 +454,10 @@ GLOBAL_RESOURCE_POOL: ResourcePool[Any, Any, Any] = ResourcePool()
 
 
 __all__ = [
+    "AttemptRelease",
     "GLOBAL_RESOURCE_POOL",
-    "RequestId",
-    "RequestInterruption",
-    "ResourceLease",
     "ResourcePool",
     "ResourceRecord",
-    "ResourceRequest",
     "ResourceRequestRecord",
     "RetiredResource",
 ]

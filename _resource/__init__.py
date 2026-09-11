@@ -1,39 +1,53 @@
 """Physical resource coordination, I/O, and cleanup primitives."""
 
+from _access import AccessIdentity
+from _attempt import AttemptToken
 from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
-from _resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
+from _resource.manager import (
+    ResourceAcquisitionCancelled,
+    ResourceManagement,
+    ResourceManager,
+    ResourceRequirementsModel,
+)
 from _resource.policy import ResourcePolicy
-from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.pool import (
+    AttemptRelease,
     GLOBAL_RESOURCE_POOL,
-    RequestId,
-    RequestInterruption,
-    ResourceLease,
     ResourcePool,
     ResourceRecord,
-    ResourceRequest,
     ResourceRequestRecord,
     RetiredResource,
+)
+from _resource.requirement import ResourceRequirement, ResourceRequirements
+from _resource.result import (
+    ResourceAcquireResult,
+    ResourceAcquired,
+    ResourceBlocked,
+    ResourceFailed,
 )
 
 
 __all__ = [
+    "AccessIdentity",
+    "AttemptRelease",
+    "AttemptToken",
     "GLOBAL_RESOURCE_POOL",
-    "RequestId",
     "PhysicalAcquisition",
-    "RequestInterruption",
-    "ResourceAcquisition",
+    "ResourceAcquisitionCancelled",
+    "ResourceAcquireResult",
+    "ResourceAcquired",
+    "ResourceBlocked",
     "ResourceDriver",
-    "ResourceLease",
+    "ResourceFailed",
     "ResourceManagement",
     "ResourceManager",
-    "ResourceRequirement",
-    "ResourceRequirements",
-    "ResourcePolicy",
     "ResourcePool",
     "ResourceRecord",
-    "ResourceRequest",
     "ResourceRequestRecord",
+    "ResourceRequirement",
+    "ResourceRequirements",
+    "ResourceRequirementsModel",
+    "ResourcePolicy",
     "ResourceSet",
     "RetiredResource",
 ]
