@@ -1,0 +1,96 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+out/
+# target/
+
+# Cache
+.cache/
+.tmp/
+tmp/
+temp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Node / JS
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+coverage/
+
+# Java
+*.class
+*.jar
+*.war
+
+# Go
+*.exe
+*.test
+
+# Rust
+Cargo.lock
+# target/
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets / keys
+*.pem
+*.key
+*.crt
+
+# Uploads / local files
+uploads/
+storage/
+
+
+# custom
+/.gpt_image_tool/
+/history/
+unpacked_code/
+.agents/
+all_code.md
+all_code_packing.py
+all_code_unpacking.py
+all_code_dependency.md
+all_code_dependency_packing.py
+all_code_dependency_unpacking.py
+app.py_old
+cleanup_whitespace.py
+
+changes.diff
