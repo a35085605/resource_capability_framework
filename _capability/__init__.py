@@ -1,6 +1,6 @@
 """Pure capability projection contracts."""
 
-from adb._capability.projection import CapabilityProjection
+from _capability.projection import CapabilityProjection
 
 
 __all__ = ["CapabilityProjection"]

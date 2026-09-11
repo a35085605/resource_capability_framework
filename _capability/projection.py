@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
-from adb._resource.driver import ResourceSet
+from _resource.driver import ResourceSet
 
 
 AccessT = TypeVar("AccessT", contravariant=True)

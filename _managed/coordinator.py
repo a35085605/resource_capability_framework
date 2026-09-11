@@ -4,8 +4,8 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, Hashable, TypeVar
 
-from adb._managed.adapter import Adapter
-from adb._managed.result import (
+from _managed.adapter import Adapter
+from _managed.result import (
     AcquireAccessMismatch,
     AcquireBusy,
     AcquireCommitted,
@@ -19,11 +19,11 @@ from adb._managed.result import (
     ReleaseInactive,
     ReleaseResult,
 )
-from adb._managed.snapshot import Snapshot
-from adb._managed.state import Current, Idle, ManagedAttempt, ManagedState, Preparing
-from adb._resource.driver import ResourceSet
-from adb._resource.manager import ResourceAcquisition, ResourceManagement
-from adb._resource.pool import ResourceLease
+from _managed.snapshot import Snapshot
+from _managed.state import Current, Idle, ManagedAttempt, ManagedState, Preparing
+from _resource.driver import ResourceSet
+from _resource.manager import ResourceAcquisition, ResourceManagement
+from _resource.pool import ResourceLease
 
 
 GenerationT = TypeVar("GenerationT")

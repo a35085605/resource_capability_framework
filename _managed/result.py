@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from adb._managed.snapshot import Snapshot
+from _managed.snapshot import Snapshot
 
 
 GenerationT = TypeVar("GenerationT")

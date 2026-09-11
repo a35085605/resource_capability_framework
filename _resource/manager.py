@@ -4,9 +4,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, TypeVar
 
-from adb._resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
-from adb._resource.plan import ResourcePlan
-from adb._resource.pool import (
+from _resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
+from _resource.plan import ResourcePlan
+from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
     ResourceLease,
     ResourcePool,

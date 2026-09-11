@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
-from adb._capability.projection import CapabilityProjection
-from adb._resource.manager import ResourceManagement
-from adb._resource.plan import ResourcePlan
+from _capability.projection import CapabilityProjection
+from _resource.manager import ResourceManagement
+from _resource.plan import ResourcePlan
 
 
 AccessT = TypeVar("AccessT")

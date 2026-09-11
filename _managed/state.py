@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from threading import Event, Lock
 from typing import Generic, Hashable, TypeAlias, TypeVar
 
-from adb._resource.manager import ResourceAcquisition
-from adb._resource.pool import ResourceLease
+from _resource.manager import ResourceAcquisition
+from _resource.pool import ResourceLease
 
 
 GenerationT = TypeVar("GenerationT")

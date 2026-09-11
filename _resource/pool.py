@@ -5,8 +5,8 @@ from itertools import count
 from threading import Lock
 from typing import Any, Generic, Hashable, TypeVar
 
-from adb._resource.requirement import ResourcePolicy, ResourceRequirement
-from adb._resource.driver import ResourceSet
+from _resource.requirement import ResourcePolicy, ResourceRequirement
+from _resource.driver import ResourceSet
 
 
 ScopeT = TypeVar("ScopeT")

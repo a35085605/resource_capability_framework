@@ -1,8 +1,8 @@
 """Managed Access authority and capability coordination primitives."""
 
-from adb._managed.adapter import AccessModel, Adapter
-from adb._managed.coordinator import ManagedCoordinator
-from adb._managed.result import (
+from _managed.adapter import AccessModel, Adapter
+from _managed.coordinator import ManagedCoordinator
+from _managed.result import (
     AcquireAccessMismatch,
     AcquireBusy,
     AcquireCommitted,
@@ -16,8 +16,8 @@ from adb._managed.result import (
     ReleaseInactive,
     ReleaseResult,
 )
-from adb._managed.snapshot import Snapshot
-from adb._managed.state import Current, Idle, ManagedAttempt, ManagedState, Preparing
+from _managed.snapshot import Snapshot
+from _managed.state import Current, Idle, ManagedAttempt, ManagedState, Preparing
 
 
 __all__ = [

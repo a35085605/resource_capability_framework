@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Hashable, TypeVar
 
-from adb._resource.requirement import ResourceRequirement
+from _resource.requirement import ResourceRequirement
 
 
 SpecT = TypeVar("SpecT")

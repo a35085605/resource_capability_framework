@@ -1,9 +1,9 @@
 """Physical resource planning, coordination, I/O, and cleanup primitives."""
 
-from adb._resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
-from adb._resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
-from adb._resource.plan import ResourcePlan
-from adb._resource.pool import (
+from _resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
+from _resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
+from _resource.plan import ResourcePlan
+from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
     RequestId,
     RequestInterruption,
@@ -15,7 +15,7 @@ from adb._resource.pool import (
     ResourceReservation,
     RetiredResource,
 )
-from adb._resource.requirement import ResourcePolicy, ResourceRequirement
+from _resource.requirement import ResourcePolicy, ResourceRequirement
 
 
 __all__ = [
