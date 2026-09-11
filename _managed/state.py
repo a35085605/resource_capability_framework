@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _attempt import AttemptToken
+from _attempt import AttemptId
 
 
 GenerationT = TypeVar("GenerationT")
@@ -20,7 +20,7 @@ class Idle(Generic[GenerationT]):
 class Preparing(Generic[GenerationT, AccessT]):
     generation: GenerationT
     access: AccessT
-    attempt: AttemptToken
+    attempt_id: AttemptId
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,7 @@ class Current(Generic[GenerationT, AccessT, CapabilityT]):
     generation: GenerationT
     access: AccessT
     capability: CapabilityT
-    attempt: AttemptToken
+    attempt_id: AttemptId
 
 
 ManagedState: TypeAlias = (

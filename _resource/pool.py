@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Generic, TypeVar
 
-from _attempt import AttemptToken
+from _attempt import AttemptId
 from _resource.driver import ResourceSet
 from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
@@ -19,7 +19,7 @@ ResourceT = TypeVar("ResourceT")
 class ResourceRequestRecord(Generic[AccessT, SpecT, ResourceT]):
     """Immutable point-in-time view of one attempt still being acquired."""
 
-    attempt: AttemptToken
+    attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT] | None
@@ -31,7 +31,7 @@ class ResourceRequestRecord(Generic[AccessT, SpecT, ResourceT]):
 class ResourceRecord(Generic[AccessT, SpecT, ResourceT]):
     """Immutable point-in-time view of one retained or retired attempt."""
 
-    attempt: AttemptToken
+    attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
@@ -42,7 +42,7 @@ class ResourceRecord(Generic[AccessT, SpecT, ResourceT]):
 class RetiredResource(Generic[AccessT, SpecT, ResourceT]):
     """Exact retired attempt retained until physical cleanup succeeds."""
 
-    attempt: AttemptToken
+    attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
@@ -60,7 +60,7 @@ class AttemptRelease(Generic[AccessT, SpecT, ResourceT]):
 @dataclass(slots=True)
 class _RequestState(Generic[AccessT, SpecT, ResourceT]):
     owner: object
-    attempt: AttemptToken
+    attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT] | None = None
@@ -71,7 +71,7 @@ class _RequestState(Generic[AccessT, SpecT, ResourceT]):
 @dataclass(slots=True)
 class _RecordState(Generic[AccessT, SpecT, ResourceT]):
     owner: object
-    attempt: AttemptToken
+    attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
@@ -83,7 +83,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     Conflict checking and reservation are one atomic operation.  Access is retained
     only to associate records with the request that created them; conflicts are
-    determined exclusively by Resource requirements.  ``AttemptToken`` identifies
+    determined exclusively by Resource requirements.  ``AttemptId`` identifies
     the same acquisition from reservation through retained/retired resource state;
     manager ownership remains a separate invariant.
     """
@@ -91,10 +91,10 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def __init__(self) -> None:
         self._lock = Lock()
         self._records: dict[
-            AttemptToken, _RecordState[AccessT, SpecT, ResourceT]
+            AttemptId, _RecordState[AccessT, SpecT, ResourceT]
         ] = {}
         self._requests: dict[
-            AttemptToken, _RequestState[AccessT, SpecT, ResourceT]
+            AttemptId, _RequestState[AccessT, SpecT, ResourceT]
         ] = {}
 
     @staticmethod
@@ -103,9 +103,9 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             raise TypeError("owner cannot be None")
 
     @staticmethod
-    def _validate_attempt(attempt: AttemptToken) -> None:
-        if not isinstance(attempt, AttemptToken):
-            raise TypeError("attempt must be AttemptToken")
+    def _validate_attempt(attempt: AttemptId) -> None:
+        if not isinstance(attempt, AttemptId):
+            raise TypeError("attempt must be AttemptId")
 
     @staticmethod
     def _validate_access(access: AccessT) -> None:
@@ -143,7 +143,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     def request_snapshot(
         self,
-        attempt: AttemptToken,
+        attempt: AttemptId,
     ) -> ResourceRequestRecord[AccessT, SpecT, ResourceT] | None:
         self._validate_attempt(attempt)
         with self._lock:
@@ -200,7 +200,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def reserve(
         self,
         owner: object,
-        attempt: AttemptToken,
+        attempt: AttemptId,
         access: AccessT,
         requirements: ResourceRequirements[SpecT],
     ) -> bool:
@@ -233,7 +233,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def publish(
         self,
         owner: object,
-        attempt: AttemptToken,
+        attempt: AttemptId,
         resources: ResourceSet[ResourceT],
     ) -> None:
         self._validate_resources(resources)
@@ -246,7 +246,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def release(
         self,
         owner: object,
-        attempt: AttemptToken,
+        attempt: AttemptId,
     ) -> AttemptRelease[AccessT, SpecT, ResourceT]:
         """Idempotently request stop/release for any current phase of ``attempt``."""
 
@@ -272,7 +272,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def finish(
         self,
         owner: object,
-        attempt: AttemptToken,
+        attempt: AttemptId,
         resources: ResourceSet[ResourceT] | None = None,
     ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
         """Publish the final snapshot and end physical processing for ``attempt``."""
@@ -290,7 +290,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 return self._retire_request_locked(state)
             return None
 
-    def cancel(self, owner: object, attempt: AttemptToken) -> bool:
+    def cancel(self, owner: object, attempt: AttemptId) -> bool:
         """Cancel a reservation that has not published any Resource yet."""
 
         self._validate_owner(owner)
@@ -305,7 +305,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             del self._requests[attempt]
             return True
 
-    def install(self, owner: object, attempt: AttemptToken) -> None:
+    def install(self, owner: object, attempt: AttemptId) -> None:
         """Move one finished attempt into retained Resource state."""
 
         with self._lock:
@@ -359,7 +359,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def _require_request_locked(
         self,
         owner: object,
-        attempt: AttemptToken,
+        attempt: AttemptId,
     ) -> _RequestState[AccessT, SpecT, ResourceT]:
         self._validate_owner(owner)
         self._validate_attempt(attempt)

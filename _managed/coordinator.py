@@ -4,7 +4,7 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, TypeVar
 
-from _attempt import AttemptToken
+from _attempt import AttemptId
 from _capability.projection import CapabilityProjection
 from _managed.result import (
     AcquireAccessMismatch,
@@ -35,9 +35,9 @@ CapabilityT = TypeVar("CapabilityT")
 class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
     """Coordinate Managed authority while ResourceManagement owns Resources.
 
-    Managed state contains only generation, Access value, attempt
-    authority, and published Capability.  Resource reservation, physical I/O,
-    retention, interruption, retirement, and cleanup stay below the
+    Managed state contains only generation, Access value, opaque attempt identity,
+    and published Capability.  Resource attempt lifecycle, reservation, physical
+    I/O, interruption, retention, retirement, and cleanup stay below the
     ResourceManagement boundary.
     """
 
@@ -77,6 +77,7 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
             if expected != self._state.generation:
                 return GenerationMismatch(self._state.generation)
 
+        manager = self._resource_manager
         with self._lock:
             state = self._state
             if expected != state.generation:
@@ -91,34 +92,28 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
             if not isinstance(state, Idle):
                 raise RuntimeError("unsupported Managed state")
 
-            attempt = AttemptToken()
+            attempt_id = manager.open_attempt()
             self._state = Preparing(
                 state.generation,
                 access,
-                attempt,
+                attempt_id,
             )
 
-        manager = self._resource_manager
         try:
-            result = manager.acquire(attempt, access)
-
-            if attempt.cancelled:
-                manager.release(attempt)
-                return self._finish_superseded(attempt)
+            result = manager.acquire(attempt_id, access)
 
             if isinstance(result, ResourceBlocked):
-                abandoned, current_generation = self._abandon_if_current(attempt)
+                abandoned, current_generation = self._abandon_if_current(attempt_id)
                 if abandoned:
                     return AcquireBusy()
                 return AcquireSuperseded(current_generation)
 
             if isinstance(result, ResourceFailed):
-                abandoned, current_generation = self._abandon_if_current(attempt)
-                if attempt.cancelled or not abandoned:
-                    manager.release(attempt)
+                abandoned, current_generation = self._abandon_if_current(attempt_id)
+                if not abandoned:
+                    manager.release(attempt_id)
                     return AcquireSuperseded(current_generation)
-                attempt.cancel()
-                manager.release(attempt)
+                manager.release(attempt_id)
                 raise result.error
 
             if not isinstance(result, ResourceAcquired):
@@ -135,8 +130,7 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 state = self._state
                 owns_authority = (
                     isinstance(state, Preparing)
-                    and state.attempt is attempt
-                    and not attempt.cancelled
+                    and state.attempt_id is attempt_id
                 )
                 if owns_authority:
                     snapshot = Snapshot(state.generation, access, capability)
@@ -144,25 +138,24 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                         state.generation,
                         access,
                         capability,
-                        attempt,
+                        attempt_id,
                     )
                     return AcquireCommitted(snapshot)
                 current_generation = state.generation
 
-            manager.release(attempt)
+            manager.release(attempt_id)
             return AcquireSuperseded(current_generation)
 
         except BaseException as exc:
-            self._abandon_if_current(attempt)
-            attempt.cancel()
+            self._abandon_if_current(attempt_id)
             try:
-                manager.release(attempt)
+                manager.release(attempt_id)
             except Exception as release_error:
                 if isinstance(exc, Exception):
                     exc.add_note(f"resource release also failed: {release_error!r}")
             raise
         finally:
-            manager.finish_acquire(attempt)
+            manager.finish_acquire(attempt_id)
 
     def release(
         self,
@@ -182,7 +175,7 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 return ReleaseInactive()
 
         next_generation: GenerationT | None = None
-        attempt: AttemptToken | None = None
+        attempt_id: AttemptId | None = None
         preparing = False
 
         with self._lock:
@@ -196,7 +189,7 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 if state.access != access:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
-                attempt = state.attempt
+                attempt_id = state.attempt_id
                 preparing = True
             else:
                 if not isinstance(state, Current):
@@ -204,15 +197,14 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 if state.access != access:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
-                attempt = state.attempt
+                attempt_id = state.attempt_id
 
-            attempt.cancel()
             self._state = Idle(next_generation)
 
         # Detach Managed authority before physical interruption/cleanup.
-        assert attempt is not None
+        assert attempt_id is not None
         assert next_generation is not None
-        self._resource_manager.release(attempt)
+        self._resource_manager.release(attempt_id)
         if preparing:
             return ReleaseAcquisitionRevoked(next_generation)
         return ReleaseDetached(next_generation)
@@ -231,21 +223,14 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
 
     def _abandon_if_current(
         self,
-        attempt: AttemptToken,
+        attempt_id: AttemptId,
     ) -> tuple[bool, GenerationT]:
         with self._lock:
             state = self._state
-            if isinstance(state, Preparing) and state.attempt is attempt:
+            if isinstance(state, Preparing) and state.attempt_id is attempt_id:
                 self._state = Idle(state.generation)
                 return True, state.generation
             return False, state.generation
-
-    def _finish_superseded(
-        self,
-        attempt: AttemptToken,
-    ) -> AcquireSuperseded[GenerationT]:
-        _abandoned, current_generation = self._abandon_if_current(attempt)
-        return AcquireSuperseded(current_generation)
 
 
 __all__ = ["ManagedCoordinator"]

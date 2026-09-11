@@ -1,6 +1,6 @@
 """Managed Access authority and capability coordination primitives."""
 
-from _attempt import AttemptToken
+from _attempt import AttemptId
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
     AcquireAccessMismatch,
@@ -27,7 +27,7 @@ __all__ = [
     "AcquireExisting",
     "AcquireResult",
     "AcquireSuperseded",
-    "AttemptToken",
+    "AttemptId",
     "Current",
     "GenerationMismatch",
     "Idle",
