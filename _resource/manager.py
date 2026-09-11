@@ -257,7 +257,6 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                     if retired is not None:
                         self._attempts[attempt_id] = _Retired(context, retired)
                     else:
-                        self._resource_pool.install(attempt_id)
                         self._attempts[attempt_id] = _Pinned(context)
                         return ResourceAcquired(resources)
                 else:
