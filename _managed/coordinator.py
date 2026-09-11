@@ -201,7 +201,8 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
 
             self._state = Idle(next_generation)
 
-        # Detach Managed authority before physical interruption/cleanup.
+        # Detach Managed authority before retiring the Resource attempt.  Physical
+        # interruption and cleanup continue independently below this boundary.
         assert attempt_id is not None
         assert next_generation is not None
         self._resource_manager.release(attempt_id)
