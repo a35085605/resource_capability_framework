@@ -142,7 +142,6 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         if not isinstance(resource_pool, ResourcePool):
             raise TypeError("resource_pool must be ResourcePool")
         self._resource_pool = resource_pool
-        self._owner = object()
         self._lock = Lock()
         self._attempts: dict[
             AttemptId, _AttemptState[AccessT, SpecT, ResourceT]
@@ -205,7 +204,6 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
             context.requirements = requirements
             reserved = self._resource_pool.reserve(
-                self._owner,
                 attempt_id,
                 access,
                 requirements,
@@ -242,9 +240,8 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             with self._lock:
                 current = self._attempts.get(attempt_id)
                 if isinstance(current, _Cancelling) and current.context is context:
-                    self._resource_pool.release(self._owner, attempt_id)
+                    self._resource_pool.release(attempt_id)
                     retired = self._resource_pool.finish(
-                        self._owner,
                         attempt_id,
                         resources,
                     )
@@ -254,14 +251,13 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                         self._attempts.pop(attempt_id, None)
                 elif current is acquiring:
                     retired = self._resource_pool.finish(
-                        self._owner,
                         attempt_id,
                         resources,
                     )
                     if retired is not None:
                         self._attempts[attempt_id] = _Retired(context, retired)
                     else:
-                        self._resource_pool.install(self._owner, attempt_id)
+                        self._resource_pool.install(attempt_id)
                         self._attempts[attempt_id] = _Pinned(context)
                         return ResourceAcquired(resources)
                 else:
@@ -299,7 +295,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             if isinstance(state, _Acquiring):
                 context = state.context
                 self._attempts[attempt_id] = _Cancelling(context)
-                release = self._resource_pool.release(self._owner, attempt_id)
+                release = self._resource_pool.release(attempt_id)
                 retired = release.retired
                 physicals = [
                     part.physical for part in context.parts if not part.finished
@@ -309,7 +305,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                     cleanup_now = True
             elif isinstance(state, _Cancelling):
                 context = state.context
-                release = self._resource_pool.release(self._owner, attempt_id)
+                release = self._resource_pool.release(attempt_id)
                 retired = release.retired
                 physicals = [
                     part.physical for part in context.parts if not part.finished
@@ -318,13 +314,13 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                     self._attempts[attempt_id] = _Retired(context, retired)
                     cleanup_now = True
             elif isinstance(state, _Pinned):
-                release = self._resource_pool.release(self._owner, attempt_id)
+                release = self._resource_pool.release(attempt_id)
                 retired = release.retired
                 if retired is None:
                     raise RuntimeError("pinned resource attempt was not retained")
                 self._attempts[attempt_id] = _RetiredPinned(state.context, retired)
             elif isinstance(state, _Retained):
-                release = self._resource_pool.release(self._owner, attempt_id)
+                release = self._resource_pool.release(attempt_id)
                 retired = release.retired
                 if retired is None:
                     raise RuntimeError("retained resource attempt was not retained")
@@ -389,11 +385,19 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
     def cleanup_retired(self, access: AccessT) -> bool:
         if access is None:
             raise TypeError("access cannot be None")
-        requirements = self._requirements_model.requirements(access)
-        retired_records = self._resource_pool.retired(
-            self._owner,
-            access,
-            requirements,
+
+        with self._lock:
+            attempt_ids = tuple(
+                state.retired.attempt
+                for state in self._attempts.values()
+                if isinstance(state, (_RetiredPinned, _Retired))
+                and state.retired.access == access
+            )
+
+        retired_records = tuple(
+            retired
+            for attempt_id in attempt_ids
+            if (retired := self._resource_pool.retired(attempt_id)) is not None
         )
         if not retired_records:
             return False
@@ -437,7 +441,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
     ) -> Exception | None:
         if not context.parts:
             resources: ResourceSet[ResourceT] = ()
-            self._resource_pool.publish(self._owner, context.attempt_id, resources)
+            self._resource_pool.publish(context.attempt_id, resources)
             return None
 
         for part in context.parts:
@@ -471,7 +475,6 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                         )
                     part.resources = snapshot
                     self._resource_pool.publish(
-                        self._owner,
                         context.attempt_id,
                         self._current_resources(context),
                     )
@@ -503,14 +506,13 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                 return None
 
             self._attempts[context.attempt_id] = _Cancelling(context)
-            release = self._resource_pool.release(self._owner, context.attempt_id)
+            release = self._resource_pool.release(context.attempt_id)
             physicals = [
                 part.physical for part in context.parts if not part.finished
             ]
             if release.processing:
                 current_resources = self._current_resources_or_none(context)
                 retired = self._resource_pool.finish(
-                    self._owner,
                     context.attempt_id,
                     current_resources,
                 )
@@ -546,11 +548,11 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                 part.physical for part in context.parts if not part.finished
             ]
             try:
-                self._resource_pool.cancel(self._owner, context.attempt_id)
+                self._resource_pool.cancel(context.attempt_id)
             except RuntimeError:
-                release = self._resource_pool.release(self._owner, context.attempt_id)
+                release = self._resource_pool.release(context.attempt_id)
                 if release.processing:
-                    self._resource_pool.finish(self._owner, context.attempt_id, None)
+                    self._resource_pool.finish(context.attempt_id, None)
             self._attempts.pop(context.attempt_id, None)
 
         for physical in physicals:

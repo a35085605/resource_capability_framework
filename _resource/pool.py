@@ -46,7 +46,6 @@ class RetiredResource(Generic[AccessT, SpecT, ResourceT]):
     access: AccessT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
-    _owner: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +58,6 @@ class AttemptRelease(Generic[AccessT, SpecT, ResourceT]):
 
 @dataclass(slots=True)
 class _RequestState(Generic[AccessT, SpecT, ResourceT]):
-    owner: object
     attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
@@ -70,7 +68,6 @@ class _RequestState(Generic[AccessT, SpecT, ResourceT]):
 
 @dataclass(slots=True)
 class _RecordState(Generic[AccessT, SpecT, ResourceT]):
-    owner: object
     attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
@@ -83,9 +80,9 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     Conflict checking and reservation are one atomic operation.  Access is retained
     only to associate records with the request that created them; conflicts are
-    determined exclusively by Resource requirements.  ``AttemptId`` identifies
-    the same acquisition from reservation through retained/retired resource state;
-    manager ownership remains a separate invariant.
+    determined exclusively by Resource requirements.  ``AttemptId`` is the sole
+    identity for the same acquisition from reservation through retained/retired
+    resource state.
     """
 
     def __init__(self) -> None:
@@ -96,11 +93,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         self._requests: dict[
             AttemptId, _RequestState[AccessT, SpecT, ResourceT]
         ] = {}
-
-    @staticmethod
-    def _validate_owner(owner: object) -> None:
-        if owner is None:
-            raise TypeError("owner cannot be None")
 
     @staticmethod
     def _validate_attempt(attempt: AttemptId) -> None:
@@ -179,34 +171,25 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     def retired(
         self,
-        owner: object,
-        access: AccessT,
-        requirements: ResourceRequirements[SpecT],
-    ) -> tuple[RetiredResource[AccessT, SpecT, ResourceT], ...]:
-        self._validate_owner(owner)
-        self._validate_access(access)
-        normalized = self._validate_requirements(requirements)
+        attempt: AttemptId,
+    ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
+        """Return the exact retired resource identified by ``attempt``."""
 
+        self._validate_attempt(attempt)
         with self._lock:
-            return tuple(
-                self._retired_view(state)
-                for state in self._records.values()
-                if state.owner is owner
-                and state.access == access
-                and state.retired
-                and self._same_spec_set(state.requirements, normalized)
-            )
+            state = self._records.get(attempt)
+            if state is None or not state.retired:
+                return None
+            return self._retired_view(state)
 
     def reserve(
         self,
-        owner: object,
         attempt: AttemptId,
         access: AccessT,
         requirements: ResourceRequirements[SpecT],
     ) -> bool:
         """Atomically conflict-check requirements and reserve them for ``attempt``."""
 
-        self._validate_owner(owner)
         self._validate_attempt(attempt)
         self._validate_access(access)
         normalized = self._validate_requirements(requirements)
@@ -223,7 +206,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                     return False
 
             self._requests[attempt] = _RequestState(
-                owner=owner,
                 attempt=attempt,
                 access=access,
                 requirements=normalized,
@@ -232,30 +214,26 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     def publish(
         self,
-        owner: object,
         attempt: AttemptId,
         resources: ResourceSet[ResourceT],
     ) -> None:
         self._validate_resources(resources)
         with self._lock:
-            state = self._require_request_locked(owner, attempt)
+            state = self._require_request_locked(attempt)
             if not state.processing:
                 raise RuntimeError("resource attempt is no longer processing")
             state.resources = resources
 
     def release(
         self,
-        owner: object,
         attempt: AttemptId,
     ) -> AttemptRelease[AccessT, SpecT, ResourceT]:
         """Idempotently request stop/release for any current phase of ``attempt``."""
 
-        self._validate_owner(owner)
         self._validate_attempt(attempt)
         with self._lock:
             request = self._requests.get(attempt)
             if request is not None:
-                self._require_owner(request.owner, owner)
                 request.interrupted = True
                 if request.processing:
                     return AttemptRelease(processing=True)
@@ -265,13 +243,11 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             record = self._records.get(attempt)
             if record is None:
                 return AttemptRelease(processing=False)
-            self._require_owner(record.owner, owner)
             record.retired = True
             return AttemptRelease(processing=False, retired=self._retired_view(record))
 
     def finish(
         self,
-        owner: object,
         attempt: AttemptId,
         resources: ResourceSet[ResourceT] | None = None,
     ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
@@ -280,7 +256,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         if resources is not None:
             self._validate_resources(resources)
         with self._lock:
-            state = self._require_request_locked(owner, attempt)
+            state = self._require_request_locked(attempt)
             if not state.processing:
                 raise RuntimeError("resource attempt is already finished")
             if resources is not None:
@@ -290,26 +266,24 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 return self._retire_request_locked(state)
             return None
 
-    def cancel(self, owner: object, attempt: AttemptId) -> bool:
+    def cancel(self, attempt: AttemptId) -> bool:
         """Cancel a reservation that has not published any Resource yet."""
 
-        self._validate_owner(owner)
         self._validate_attempt(attempt)
         with self._lock:
             state = self._requests.get(attempt)
             if state is None:
                 return False
-            self._require_owner(state.owner, owner)
             if state.resources is not None:
                 raise RuntimeError("cannot cancel an attempt that already has resources")
             del self._requests[attempt]
             return True
 
-    def install(self, owner: object, attempt: AttemptId) -> None:
+    def install(self, attempt: AttemptId) -> None:
         """Move one finished attempt into retained Resource state."""
 
         with self._lock:
-            state = self._require_request_locked(owner, attempt)
+            state = self._require_request_locked(attempt)
             if state.processing:
                 raise RuntimeError("resource attempt is still processing")
             if state.interrupted:
@@ -318,7 +292,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 raise RuntimeError("resource attempt has no final resources")
 
             self._records[attempt] = _RecordState(
-                owner=state.owner,
                 attempt=state.attempt,
                 access=state.access,
                 requirements=state.requirements,
@@ -337,7 +310,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             state = self._records.get(retired.attempt)
             if state is None:
                 raise RuntimeError("retired resource is not retained")
-            self._require_owner(state.owner, retired._owner)
             if state.resources is not retired.resources:
                 raise RuntimeError("retired resource does not match retained resources")
             if not state.retired:
@@ -351,22 +323,14 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         if not isinstance(resources, tuple):
             raise TypeError("resources must be a ResourceSet tuple")
 
-    @staticmethod
-    def _require_owner(actual: object, expected: object) -> None:
-        if actual is not expected:
-            raise RuntimeError("resource attempt belongs to another manager")
-
     def _require_request_locked(
         self,
-        owner: object,
         attempt: AttemptId,
     ) -> _RequestState[AccessT, SpecT, ResourceT]:
-        self._validate_owner(owner)
         self._validate_attempt(attempt)
         state = self._requests.get(attempt)
         if state is None:
             raise RuntimeError("resource attempt is not current")
-        self._require_owner(state.owner, owner)
         return state
 
     @staticmethod
@@ -391,7 +355,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             return None
 
         record = _RecordState(
-            owner=state.owner,
             attempt=state.attempt,
             access=state.access,
             requirements=state.requirements,
@@ -410,7 +373,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             state.access,
             state.requirements,
             state.resources,
-            state.owner,
         )
 
     @staticmethod
@@ -419,16 +381,6 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         spec: SpecT,
     ) -> bool:
         return any(requirement.spec == spec for requirement in requirements)
-
-    @staticmethod
-    def _same_spec_set(
-        left: ResourceRequirements[SpecT],
-        right: ResourceRequirements[SpecT],
-    ) -> bool:
-        return len(left) == len(right) and all(
-            any(candidate.spec == requirement.spec for candidate in right)
-            for requirement in left
-        )
 
     @staticmethod
     def _conflicts(
