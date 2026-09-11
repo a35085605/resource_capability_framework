@@ -1,6 +1,5 @@
 """Managed Access authority and capability coordination primitives."""
 
-from _access import AccessIdentity
 from _attempt import AttemptToken
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
@@ -22,7 +21,6 @@ from _managed.state import Current, Idle, ManagedState, Preparing
 
 
 __all__ = [
-    "AccessIdentity",
     "AcquireAccessMismatch",
     "AcquireBusy",
     "AcquireCommitted",

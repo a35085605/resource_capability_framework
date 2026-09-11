@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, Hashable, TypeAlias, TypeVar
+from typing import Generic, TypeAlias, TypeVar
 
 from _attempt import AttemptToken
 
 
 GenerationT = TypeVar("GenerationT")
 AccessT = TypeVar("AccessT")
-AccessKeyT = TypeVar("AccessKeyT", bound=Hashable)
 CapabilityT = TypeVar("CapabilityT")
 
 
@@ -18,26 +17,24 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
-class Preparing(Generic[GenerationT, AccessT, AccessKeyT]):
+class Preparing(Generic[GenerationT, AccessT]):
     generation: GenerationT
     access: AccessT
-    access_key: AccessKeyT
     attempt: AttemptToken
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, AccessT, AccessKeyT, CapabilityT]):
+class Current(Generic[GenerationT, AccessT, CapabilityT]):
     generation: GenerationT
     access: AccessT
-    access_key: AccessKeyT
     capability: CapabilityT
     attempt: AttemptToken
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
-    | Preparing[GenerationT, AccessT, AccessKeyT]
-    | Current[GenerationT, AccessT, AccessKeyT, CapabilityT]
+    | Preparing[GenerationT, AccessT]
+    | Current[GenerationT, AccessT, CapabilityT]
 )
 
 

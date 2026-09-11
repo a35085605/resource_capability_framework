@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Generic, Hashable, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
-from _access import AccessIdentity
 from _attempt import AttemptToken
 from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
 from _resource.pool import GLOBAL_RESOURCE_POOL, ResourcePool, RetiredResource
@@ -19,7 +18,6 @@ from _resource.result import (
 
 
 AccessT = TypeVar("AccessT")
-AccessKeyT = TypeVar("AccessKeyT", bound=Hashable)
 SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
 
@@ -65,9 +63,9 @@ class _AcquisitionPart(Generic[SpecT, ResourceT]):
 
 
 @dataclass(slots=True)
-class _AttemptState(Generic[AccessKeyT, SpecT, ResourceT]):
+class _AttemptState(Generic[AccessT, SpecT, ResourceT]):
     attempt: AttemptToken
-    access_key: AccessKeyT
+    access: AccessT
     requirements: ResourceRequirements[SpecT]
     parts: list[_AcquisitionPart[SpecT, ResourceT]] = field(default_factory=list)
     resources: ResourceSet[ResourceT] | None = None
@@ -77,18 +75,16 @@ class _AttemptState(Generic[AccessKeyT, SpecT, ResourceT]):
     cleanup_in_progress: bool = False
 
 
-class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
+class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
     """Own Access-to-Resource semantics, physical I/O, retention, and cleanup."""
 
     def __init__(
         self,
-        access_identity: AccessIdentity[AccessT, AccessKeyT],
         requirements_model: ResourceRequirementsModel[AccessT, SpecT],
         driver: ResourceDriver[SpecT, ResourceT],
         *,
-        resource_pool: ResourcePool[AccessKeyT, SpecT, ResourceT] = GLOBAL_RESOURCE_POOL,
+        resource_pool: ResourcePool[AccessT, SpecT, ResourceT] = GLOBAL_RESOURCE_POOL,
     ) -> None:
-        self._access_identity = access_identity
         self._requirements_model = requirements_model
         self._driver = driver
         if not isinstance(resource_pool, ResourcePool):
@@ -97,12 +93,8 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         self._owner = object()
         self._lock = Lock()
         self._attempts: dict[
-            AttemptToken, _AttemptState[AccessKeyT, SpecT, ResourceT]
+            AttemptToken, _AttemptState[AccessT, SpecT, ResourceT]
         ] = {}
-
-    @property
-    def access_identity(self) -> AccessIdentity[AccessT, AccessKeyT]:
-        return self._access_identity
 
     @property
     def requirements_model(self) -> ResourceRequirementsModel[AccessT, SpecT]:
@@ -113,7 +105,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         return self._driver
 
     @property
-    def resource_pool(self) -> ResourcePool[AccessKeyT, SpecT, ResourceT]:
+    def resource_pool(self) -> ResourcePool[AccessT, SpecT, ResourceT]:
         return self._resource_pool
 
     def acquire(
@@ -129,7 +121,6 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         if attempt.cancelled:
             return ResourceFailed(ResourceAcquisitionCancelled("attempt was cancelled"))
 
-        access_key = self._access_key(access)
         requirements = self._requirements_model.requirements(access)
 
         if attempt.cancelled:
@@ -138,13 +129,13 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         reserved = self._resource_pool.reserve(
             self._owner,
             attempt,
-            access_key,
+            access,
             requirements,
         )
         if not reserved:
             return ResourceBlocked()
 
-        state = _AttemptState(attempt, access_key, requirements)
+        state = _AttemptState(attempt, access, requirements)
         with self._lock:
             if attempt in self._attempts:
                 self._resource_pool.cancel(self._owner, attempt)
@@ -223,7 +214,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         self._validate_attempt(attempt)
         attempt.cancel()
 
-        retired: RetiredResource[AccessKeyT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
         physicals: list[PhysicalAcquisition[ResourceT]] = []
         with self._lock:
             state = self._attempts.get(attempt)
@@ -262,7 +253,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
         """End the temporary ResourceSet borrow used for capability projection."""
 
         self._validate_attempt(attempt)
-        retired: RetiredResource[AccessKeyT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
         with self._lock:
             state = self._attempts.get(attempt)
             if state is None:
@@ -280,11 +271,10 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
     def cleanup_retired(self, access: AccessT) -> bool:
         if access is None:
             raise TypeError("access cannot be None")
-        access_key = self._access_key(access)
         requirements = self._requirements_model.requirements(access)
         retired_records = self._resource_pool.retired(
             self._owner,
-            access_key,
+            access,
             requirements,
         )
         if not retired_records:
@@ -298,7 +288,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _prepare_parts(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> Exception | None:
         for requirement in state.requirements:
             if self._is_release_requested(state):
@@ -321,7 +311,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _acquire_parts(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> Exception | None:
         if not state.parts:
             resources: ResourceSet[ResourceT] = ()
@@ -378,12 +368,12 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _fail_attempt(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
         primary_error: Exception | None,
     ) -> Exception | None:
         """Retire/clean partial resources while preserving failed cleanup in Pool."""
 
-        retired: RetiredResource[AccessKeyT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
         physicals: list[PhysicalAcquisition[ResourceT]] = []
         with self._lock:
             current = self._attempts.get(state.attempt)
@@ -419,7 +409,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _cancel_before_resources(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> None:
         physicals: list[PhysicalAcquisition[ResourceT]] = []
         with self._lock:
@@ -447,9 +437,9 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _cleanup_retired_attempt(
         self,
-        retired: RetiredResource[AccessKeyT, SpecT, ResourceT],
+        retired: RetiredResource[AccessT, SpecT, ResourceT],
     ) -> Exception | None:
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT] | None
+        state: _AttemptState[AccessT, SpecT, ResourceT] | None
         with self._lock:
             state = self._attempts.get(retired.attempt)
             if state is not None:
@@ -475,7 +465,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _forget_if_unretained(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> None:
         if self._resource_pool.request_snapshot(state.attempt) is not None:
             return
@@ -487,23 +477,13 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     def _is_release_requested(
         self,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> bool:
         if state.attempt.cancelled:
             return True
         with self._lock:
             current = self._attempts.get(state.attempt)
             return current is not state or state.release_requested
-
-    def _access_key(self, access: AccessT) -> AccessKeyT:
-        access_key = self._access_identity.key(access)
-        if access_key is None:
-            raise TypeError("AccessIdentity.key() cannot return None")
-        try:
-            hash(access_key)
-        except TypeError as exc:
-            raise TypeError("AccessIdentity.key() must return a hashable value") from exc
-        return access_key
 
     @staticmethod
     def _validate_attempt(attempt: AttemptToken) -> None:
@@ -512,7 +492,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
 
     @staticmethod
     def _current_resources(
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> ResourceSet[ResourceT]:
         return tuple(
             resource
@@ -524,7 +504,7 @@ class ResourceManager(Generic[AccessT, AccessKeyT, SpecT, ResourceT]):
     @classmethod
     def _current_resources_or_none(
         cls,
-        state: _AttemptState[AccessKeyT, SpecT, ResourceT],
+        state: _AttemptState[AccessT, SpecT, ResourceT],
     ) -> ResourceSet[ResourceT] | None:
         if not state.parts:
             return ()

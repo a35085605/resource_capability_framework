@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from threading import Lock
-from typing import Generic, Hashable, TypeVar
+from typing import Generic, TypeVar
 
-from _access import AccessIdentity
 from _attempt import AttemptToken
 from _capability.projection import CapabilityProjection
 from _managed.result import (
@@ -29,17 +28,14 @@ from _resource.result import ResourceAcquired, ResourceBlocked, ResourceFailed
 
 GenerationT = TypeVar("GenerationT")
 AccessT = TypeVar("AccessT")
-AccessKeyT = TypeVar("AccessKeyT", bound=Hashable)
 ResourceT = TypeVar("ResourceT")
 CapabilityT = TypeVar("CapabilityT")
 
 
-class ManagedCoordinator(
-    Generic[GenerationT, AccessT, AccessKeyT, ResourceT, CapabilityT]
-):
+class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
     """Coordinate Managed authority while ResourceManagement owns Resources.
 
-    Managed state contains only generation, logical Access identity, attempt
+    Managed state contains only generation, Access value, attempt
     authority, and published Capability.  Resource reservation, physical I/O,
     retention, interruption, retirement, and cleanup stay below the
     ResourceManagement boundary.
@@ -48,7 +44,6 @@ class ManagedCoordinator(
     def __init__(
         self,
         issue_generation: Callable[[], GenerationT],
-        access_identity: AccessIdentity[AccessT, AccessKeyT],
         resource_manager: ResourceManagement[AccessT, ResourceT],
         capability_projection: CapabilityProjection[
             AccessT, ResourceT, CapabilityT
@@ -57,11 +52,10 @@ class ManagedCoordinator(
         if not callable(issue_generation):
             raise TypeError("issue_generation must be callable")
         self._issue_generation = issue_generation
-        self._access_identity = access_identity
         self._resource_manager = resource_manager
         self._capability_projection = capability_projection
         self._lock = Lock()
-        self._state: ManagedState[GenerationT, AccessT, AccessKeyT, CapabilityT] = (
+        self._state: ManagedState[GenerationT, AccessT, CapabilityT] = (
             Idle(issue_generation())
         )
 
@@ -83,15 +77,13 @@ class ManagedCoordinator(
             if expected != self._state.generation:
                 return GenerationMismatch(self._state.generation)
 
-        access_key = self._access_key(access)
-
         with self._lock:
             state = self._state
             if expected != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Current):
                 snapshot = self._snapshot_locked()
-                if state.access_key == access_key:
+                if state.access == access:
                     return AcquireExisting(snapshot)
                 return AcquireAccessMismatch(state.access)
             if isinstance(state, Preparing):
@@ -103,7 +95,6 @@ class ManagedCoordinator(
             self._state = Preparing(
                 state.generation,
                 access,
-                access_key,
                 attempt,
             )
 
@@ -152,7 +143,6 @@ class ManagedCoordinator(
                     self._state = Current(
                         state.generation,
                         access,
-                        state.access_key,
                         capability,
                         attempt,
                     )
@@ -191,7 +181,6 @@ class ManagedCoordinator(
             if isinstance(state, Idle):
                 return ReleaseInactive()
 
-        access_key = self._access_key(access)
         next_generation: GenerationT | None = None
         attempt: AttemptToken | None = None
         preparing = False
@@ -204,7 +193,7 @@ class ManagedCoordinator(
                 return ReleaseInactive()
 
             if isinstance(state, Preparing):
-                if state.access_key != access_key:
+                if state.access != access:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
                 attempt = state.attempt
@@ -212,7 +201,7 @@ class ManagedCoordinator(
             else:
                 if not isinstance(state, Current):
                     raise RuntimeError("unsupported Managed state")
-                if state.access_key != access_key:
+                if state.access != access:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
                 attempt = state.attempt
@@ -227,16 +216,6 @@ class ManagedCoordinator(
         if preparing:
             return ReleaseAcquisitionRevoked(next_generation)
         return ReleaseDetached(next_generation)
-
-    def _access_key(self, access: AccessT) -> AccessKeyT:
-        access_key = self._access_identity.key(access)
-        if access_key is None:
-            raise TypeError("AccessIdentity.key() cannot return None")
-        try:
-            hash(access_key)
-        except TypeError as exc:
-            raise TypeError("AccessIdentity.key() must return a hashable value") from exc
-        return access_key
 
     def _snapshot_locked(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
         state = self._state
