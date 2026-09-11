@@ -1,21 +1,20 @@
-"""Physical resource planning, coordination, I/O, and cleanup primitives."""
+"""Physical resource coordination, I/O, and cleanup primitives."""
 
 from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
 from _resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
-from _resource.plan import ResourcePlan
+from _resource.policy import ResourcePolicy
 from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
     RequestId,
     RequestInterruption,
     ResourceLease,
+    ResourcePolicies,
     ResourcePool,
     ResourceRecord,
     ResourceRequest,
     ResourceRequestRecord,
-    ResourceReservation,
     RetiredResource,
 )
-from _resource.requirement import ResourcePolicy, ResourceRequirement
 
 
 __all__ = [
@@ -28,14 +27,12 @@ __all__ = [
     "ResourceLease",
     "ResourceManagement",
     "ResourceManager",
-    "ResourcePlan",
+    "ResourcePolicies",
     "ResourcePolicy",
     "ResourcePool",
     "ResourceRecord",
     "ResourceRequest",
     "ResourceRequestRecord",
-    "ResourceRequirement",
-    "ResourceReservation",
     "ResourceSet",
     "RetiredResource",
 ]

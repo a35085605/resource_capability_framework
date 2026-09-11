@@ -4,7 +4,7 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, Hashable, TypeVar
 
-from _managed.adapter import Adapter
+from _managed.adapter import AccessResources, Adapter
 from _managed.result import (
     AcquireAccessMismatch,
     AcquireBusy,
@@ -38,17 +38,14 @@ class ManagedCoordinator(
 ):
     """Coordinate Access authority without owning physical-resource mechanics.
 
-    Authority cancellation and physical interruption are independent. The
-    coordinator owns generation/Access/Capability state and delegates the full
-    resource transaction to ``ResourceManagement`` using opaque acquisition and
-    lease handles.
+    Access identity and Resource requirements come from ``AccessModel`` as one
+    ``AccessResources`` mapping. ResourceManagement owns Access-keyed conflicts,
+    physical I/O, retirement, and cleanup.
 
-    Simplified new-resource acquire sequence::
+    Simplified acquire sequence::
 
-        Access -> ResourcePlan -> claim -> acquire -> Capability
-        -> commit lease + Current
-
-    SHARED reuse may return an existing lease directly from ``claim``.
+        Access -> AccessResources(key, {ResourceSpec: Policy})
+        -> claim -> acquire -> Capability -> commit lease + Current
     """
 
     def __init__(
@@ -87,13 +84,20 @@ class ManagedCoordinator(
         if access is None:
             raise TypeError("access cannot be None")
 
+        # Preserve the cheap generation mismatch path before invoking AccessModel.
+        with self._lock:
+            if expected != self._state.generation:
+                return GenerationMismatch(self._state.generation)
+
+        access_resources = self._access_resources(access)
+
         with self._lock:
             state = self._state
             if expected != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Current):
                 snapshot = self._snapshot_locked()
-                if state.access == access:
+                if state.access_key == access_resources.key:
                     return AcquireExisting(snapshot)
                 return AcquireAccessMismatch(state.access)
             if isinstance(state, Preparing):
@@ -105,75 +109,69 @@ class ManagedCoordinator(
                 generation=state.generation,
                 access=access,
             )
-            self._state = Preparing(state.generation, access, attempt)
+            self._state = Preparing(
+                state.generation,
+                access,
+                access_resources.key,
+                attempt,
+            )
 
         manager = self._adapter.resource_manager
         acquisition: ResourceAcquisition[SpecT, ResourceT] | None = None
-        lease: ResourceLease[Hashable, ResourceT] | None = None
+        lease: ResourceLease[Hashable, SpecT, ResourceT] | None = None
         resources: ResourceSet[ResourceT] | None = None
 
         try:
-            plan = self._adapter.access_model.resource_plan(access)
-
             if attempt.revoked:
                 return self._finish_superseded(attempt)
 
-            claim = manager.claim(plan)
-            if claim is None:
+            acquisition = manager.claim(
+                access_resources.key,
+                access_resources.resources,
+            )
+            if acquisition is None:
                 abandoned, current_generation = self._abandon_if_current(attempt)
                 if abandoned:
                     return AcquireBusy()
                 return AcquireSuperseded(current_generation)
 
-            if isinstance(claim, ResourceLease):
-                lease = claim
-                resources = claim.resources
-            else:
-                acquisition = claim
-
-                # Publish only the opaque acquisition handle into Preparing. If
-                # authority was revoked between claim and this handoff, no physical
-                # producer has started and the claim can be cancelled safely.
-                with self._lock:
-                    state = self._state
-                    owns_preparing = (
-                        isinstance(state, Preparing)
-                        and state.attempt is attempt
-                        and not attempt.revoked
+            # Publish only the opaque acquisition handle into Preparing. If
+            # authority was revoked between claim and this handoff, no physical
+            # producer has started and the claim can be cancelled safely.
+            with self._lock:
+                state = self._state
+                owns_preparing = (
+                    isinstance(state, Preparing)
+                    and state.attempt is attempt
+                    and not attempt.revoked
+                )
+                if owns_preparing:
+                    self._state = Preparing(
+                        state.generation,
+                        state.access,
+                        state.access_key,
+                        state.attempt,
+                        acquisition,
                     )
-                    if owns_preparing:
-                        self._state = Preparing(
-                            state.generation,
-                            state.access,
-                            state.attempt,
-                            acquisition,
-                        )
-                    current_generation = state.generation
+                current_generation = state.generation
 
-                if not owns_preparing:
-                    manager.cancel(acquisition)
-                    acquisition = None
-                    return AcquireSuperseded(current_generation)
+            if not owns_preparing:
+                manager.cancel(acquisition)
+                acquisition = None
+                return AcquireSuperseded(current_generation)
 
             if attempt.revoked:
-                if lease is not None:
-                    manager.release(lease)
-                    lease = None
-                elif acquisition is not None:
-                    # No physical producer has started yet.
-                    manager.cancel(acquisition)
-                    acquisition = None
+                manager.cancel(acquisition)
+                acquisition = None
                 return self._finish_superseded(attempt)
 
-            if resources is None:
-                assert acquisition is not None
-                resources = manager.acquire(acquisition)
+            resources = manager.acquire(acquisition)
 
-                if attempt.revoked:
-                    current_generation = self._current_generation()
-                    manager.abandon(acquisition, resources)
-                    acquisition = None
-                    return AcquireSuperseded(current_generation)
+            if attempt.revoked:
+                current_generation = self._current_generation()
+                manager.abandon(acquisition, resources)
+                acquisition = None
+                return AcquireSuperseded(current_generation)
 
             capability = self._adapter.capability_projection.project(access, resources)
             if capability is None:
@@ -187,27 +185,21 @@ class ManagedCoordinator(
                     and not attempt.revoked
                 )
                 if owns_authority:
-                    if lease is None:
-                        assert acquisition is not None
-                        assert resources is not None
-                        lease = manager.commit(acquisition, resources)
-                        acquisition = None
+                    lease = manager.commit(acquisition, resources)
+                    acquisition = None
                     snapshot = Snapshot(state.generation, access, capability)
                     self._state = Current(
                         state.generation,
                         access,
+                        state.access_key,
                         capability,
                         lease,
                     )
                     return AcquireCommitted(snapshot)
                 current_generation = state.generation
 
-            if lease is not None:
-                manager.release(lease)
-                lease = None
-            elif acquisition is not None:
-                manager.abandon(acquisition, resources)
-                acquisition = None
+            manager.abandon(acquisition, resources)
+            acquisition = None
             return AcquireSuperseded(current_generation)
 
         except BaseException:
@@ -230,8 +222,16 @@ class ManagedCoordinator(
         if access is None:
             raise TypeError("access cannot be None")
 
+        with self._lock:
+            state = self._state
+            if expected != state.generation:
+                return GenerationMismatch(state.generation)
+            if isinstance(state, Idle):
+                return ReleaseInactive()
+
+        access_resources = self._access_resources(access)
         acquisition: ResourceAcquisition[SpecT, ResourceT] | None = None
-        lease: ResourceLease[Hashable, ResourceT] | None = None
+        lease: ResourceLease[Hashable, SpecT, ResourceT] | None = None
         next_generation: GenerationT | None = None
         revoked_acquisition = False
 
@@ -243,7 +243,7 @@ class ManagedCoordinator(
                 return ReleaseInactive()
 
             if isinstance(state, Preparing):
-                if state.access != access:
+                if state.access_key != access_resources.key:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
                 state.attempt.revoke()
@@ -253,7 +253,7 @@ class ManagedCoordinator(
             else:
                 if not isinstance(state, Current):
                     raise RuntimeError("unsupported Managed state")
-                if state.access != access:
+                if state.access_key != access_resources.key:
                     return ReleaseAccessMismatch(state.access)
 
                 next_generation = self._fresh_generation(state.generation)
@@ -274,12 +274,21 @@ class ManagedCoordinator(
         return ReleaseDetached(next_generation)
 
     def cleanup_retired(self, access: AccessT) -> bool:
-        """Retry cleanup for retired resources described by this Access."""
+        """Retry cleanup for retired Resources described by this Access."""
 
         if access is None:
             raise TypeError("access cannot be None")
-        plan = self._adapter.access_model.resource_plan(access)
-        return self._adapter.resource_manager.cleanup_retired(plan)
+        access_resources = self._access_resources(access)
+        return self._adapter.resource_manager.cleanup_retired(
+            access_resources.key,
+            access_resources.resources,
+        )
+
+    def _access_resources(self, access: AccessT) -> AccessResources[SpecT]:
+        access_resources = self._adapter.access_model.resources(access)
+        if not isinstance(access_resources, AccessResources):
+            raise TypeError("AccessModel.resources() must return AccessResources")
+        return access_resources
 
     def _snapshot_locked(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
         state = self._state

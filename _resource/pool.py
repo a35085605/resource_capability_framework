@@ -1,103 +1,96 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from itertools import count
 from threading import Lock
 from typing import Any, Generic, Hashable, TypeVar
 
-from _resource.requirement import ResourcePolicy, ResourceRequirement
 from _resource.driver import ResourceSet
+from _resource.policy import ResourcePolicy
 
 
-ScopeT = TypeVar("ScopeT")
+AccessKeyT = TypeVar("AccessKeyT")
+SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
+
+type ResourcePolicies[T] = tuple[tuple[T, ResourcePolicy], ...]
 
 
 @dataclass(frozen=True, slots=True, order=True)
 class RequestId:
-    """Pool-local identity for exactly one physical acquisition attempt."""
+    """Pool-local identity for exactly one Access resource acquisition attempt."""
 
     value: int
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRequestRecord(Generic[ScopeT, ResourceT]):
-    """Immutable point-in-time view of one physical acquisition request."""
+class ResourceRequestRecord(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Immutable point-in-time view of one Access resource request."""
 
     request_id: RequestId
-    scope: ScopeT
-    requirement_key: Hashable
-    policy: ResourcePolicy
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     resources: ResourceSet[ResourceT] | None
     interrupted: bool
     processing: bool
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRecord(Generic[ScopeT, ResourceT]):
-    """Immutable point-in-time view of one retained physical ResourceSet."""
+class ResourceRecord(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Immutable point-in-time view of one retained Access ResourceSet."""
 
-    scope: ScopeT
-    requirement_key: Hashable
-    policy: ResourcePolicy
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     resources: ResourceSet[ResourceT]
-    leases: int
     retired: bool = False
     request_id: RequestId | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class ResourceRequest(Generic[ScopeT]):
-    """Identity token for one Pool-tracked physical acquisition request."""
+class ResourceRequest(Generic[AccessKeyT, SpecT]):
+    """Identity token for one Pool-tracked Access resource request."""
 
     request_id: RequestId
-    scope: ScopeT
-    requirement_key: Hashable
-    policy: ResourcePolicy
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     _request_token: object
 
 
-# Compatibility name for callers that still describe the pre-acquire claim as a
-# reservation. A reservation is now a processing ResourceRequest from creation.
-ResourceReservation = ResourceRequest
-
-
 @dataclass(frozen=True, slots=True, eq=False)
-class ResourceLease(Generic[ScopeT, ResourceT]):
-    """Identity token retaining one installed ResourceSet for a consumer."""
+class ResourceLease(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Identity token retaining one installed Access ResourceSet."""
 
-    scope: ScopeT
-    requirement_key: Hashable
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     resources: ResourceSet[ResourceT]
     _record_token: object
-    _lease_token: object
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class RetiredResource(Generic[ScopeT, ResourceT]):
+class RetiredResource(Generic[AccessKeyT, SpecT, ResourceT]):
     """Exact retired record that remains retained until cleanup succeeds."""
 
-    scope: ScopeT
-    requirement_key: Hashable
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     resources: ResourceSet[ResourceT]
     _record_token: object
     request_id: RequestId | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class RequestInterruption(Generic[ScopeT, ResourceT]):
-    """Result of asking one physical request to stop."""
+class RequestInterruption(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Result of asking one Access resource request to stop."""
 
     processing: bool
-    retired: RetiredResource[ScopeT, ResourceT] | None = None
+    retired: RetiredResource[AccessKeyT, SpecT, ResourceT] | None = None
 
 
 @dataclass(slots=True)
-class _RequestState(Generic[ScopeT, ResourceT]):
+class _RequestState(Generic[AccessKeyT, SpecT, ResourceT]):
     request_id: RequestId
-    scope: ScopeT
-    requirement_key: Hashable
-    policy: ResourcePolicy
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     token: object
     resources: ResourceSet[ResourceT] | None = None
     interrupted: bool = False
@@ -105,64 +98,70 @@ class _RequestState(Generic[ScopeT, ResourceT]):
 
 
 @dataclass(slots=True)
-class _RecordState(Generic[ScopeT, ResourceT]):
-    scope: ScopeT
-    requirement_key: Hashable
-    policy: ResourcePolicy
+class _RecordState(Generic[AccessKeyT, SpecT, ResourceT]):
+    access_key: AccessKeyT
+    resource_policies: ResourcePolicies[SpecT]
     resources: ResourceSet[ResourceT]
     token: object
     request_id: RequestId | None = None
-    lease_tokens: set[object] = field(default_factory=set)
     retired: bool = False
 
 
-class ResourcePool(Generic[ScopeT, ResourceT]):
-    """Process-wide registry for request processing and retained ResourceSets.
+class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
+    """Process-wide registry for Access-keyed Resource requests and leases.
 
-    A new physical acquisition is represented in the Pool before I/O begins.
-    ``interrupted`` and ``processing`` are intentionally independent: an
-    interrupted producer may still publish late ResourceSet snapshots until its
-    final ``finish`` call atomically publishes the last snapshot and clears
-    ``processing``.
+    Resource identity is the Resource spec supplied by ``AccessModel``. Policy is
+    considered only when the same Access key asks for the same Resource:
 
-    EXCLUSIVE requirements block every retained or processing request for the
-    same scope. SHARED requirements reuse only an installed active ResourceSet;
-    a same-key request that is still being prepared blocks another SHARED
-    acquisition. PARALLEL requirements may start independent requests. Retired
-    records remain conflict-visible until physical cleanup succeeds.
+    * BLOCKING: the Resource cannot coexist with another matching Resource.
+    * NON_BLOCKING: matching Resources may be acquired independently.
+
+    Conflict is determined by the Resource that already exists: an existing
+    BLOCKING Resource blocks another matching request, while an existing
+    NON_BLOCKING Resource does not. Different Access keys never conflict here.
+    Retired records remain conflict-visible until physical cleanup succeeds.
     """
 
     def __init__(self) -> None:
         self._lock = Lock()
         self._request_ids = count(1)
-        self._records: list[_RecordState[ScopeT, ResourceT]] = []
-        self._requests: list[_RequestState[ScopeT, ResourceT]] = []
+        self._records: list[_RecordState[AccessKeyT, SpecT, ResourceT]] = []
+        self._requests: list[_RequestState[AccessKeyT, SpecT, ResourceT]] = []
 
     @staticmethod
-    def _validate_scope(scope: ScopeT) -> None:
-        if scope is None:
-            raise TypeError("scope cannot be None")
+    def _validate_access_key(access_key: AccessKeyT) -> None:
+        if access_key is None:
+            raise TypeError("access_key cannot be None")
         try:
-            hash(scope)
+            hash(access_key)
         except TypeError as exc:
-            raise TypeError("scope must be hashable") from exc
+            raise TypeError("access_key must be hashable") from exc
 
     @staticmethod
-    def _validate_requirement(requirement: ResourceRequirement) -> None:
-        if not isinstance(requirement, ResourceRequirement):
-            raise TypeError("requirement must be ResourceRequirement")
+    def _normalize_resource_policies(
+        resource_policies: Mapping[SpecT, ResourcePolicy],
+    ) -> ResourcePolicies[SpecT]:
+        if not isinstance(resource_policies, Mapping):
+            raise TypeError("resource_policies must be a Mapping")
 
-    def snapshot(self) -> tuple[ResourceRecord[ScopeT, ResourceT], ...]:
-        """Return immutable views of every retained physical ResourceSet."""
+        normalized: list[tuple[SpecT, ResourcePolicy]] = []
+        for spec, policy in resource_policies.items():
+            if spec is None:
+                raise TypeError("resource spec cannot be None")
+            if not isinstance(policy, ResourcePolicy):
+                raise TypeError("resource policy must be ResourcePolicy")
+            normalized.append((spec, policy))
+        return tuple(normalized)
+
+    def snapshot(self) -> tuple[ResourceRecord[AccessKeyT, SpecT, ResourceT], ...]:
+        """Return immutable views of every retained Access ResourceSet."""
 
         with self._lock:
             return tuple(
                 ResourceRecord(
-                    state.scope,
-                    state.requirement_key,
-                    state.policy,
+                    state.access_key,
+                    state.resource_policies,
                     state.resources,
-                    len(state.lease_tokens),
                     state.retired,
                     state.request_id,
                 )
@@ -171,8 +170,8 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def request_snapshot(
         self,
-        request: ResourceRequest[ScopeT],
-    ) -> ResourceRequestRecord[ScopeT, ResourceT] | None:
+        request: ResourceRequest[AccessKeyT, SpecT],
+    ) -> ResourceRequestRecord[AccessKeyT, SpecT, ResourceT] | None:
         """Return the current request view, or ``None`` after it is consumed."""
 
         self._validate_request(request)
@@ -182,7 +181,9 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
                 return None
             return self._request_record_locked(state)
 
-    def requests(self) -> tuple[ResourceRequestRecord[ScopeT, ResourceT], ...]:
+    def requests(
+        self,
+    ) -> tuple[ResourceRequestRecord[AccessKeyT, SpecT, ResourceT], ...]:
         """Return immutable views of all requests not yet installed or retired."""
 
         with self._lock:
@@ -190,139 +191,96 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def lookup(
         self,
-        scope: ScopeT,
-        requirement_key: Hashable,
+        access_key: AccessKeyT,
+        spec: SpecT,
     ) -> tuple[ResourceSet[ResourceT], ...]:
-        """Return all active ResourceSets matching one scope + requirement key."""
+        """Return active ResourceSets containing one Access-keyed Resource spec."""
 
-        self._validate_scope(scope)
-        if requirement_key is None:
-            raise TypeError("requirement_key cannot be None")
+        self._validate_access_key(access_key)
+        if spec is None:
+            raise TypeError("spec cannot be None")
         with self._lock:
             return tuple(
                 state.resources
                 for state in self._records
-                if state.scope == scope
-                and state.requirement_key == requirement_key
+                if state.access_key == access_key
                 and not state.retired
+                and self._contains_spec(state.resource_policies, spec)
             )
 
     def retired(
         self,
-        scope: ScopeT,
-        requirement_key: Hashable,
-    ) -> tuple[RetiredResource[ScopeT, ResourceT], ...]:
-        """Return retired records matching one scope + requirement key."""
+        access_key: AccessKeyT,
+        resource_policies: Mapping[SpecT, ResourcePolicy],
+    ) -> tuple[RetiredResource[AccessKeyT, SpecT, ResourceT], ...]:
+        """Return retired records matching one Access key and Resource spec set."""
 
-        self._validate_scope(scope)
-        if requirement_key is None:
-            raise TypeError("requirement_key cannot be None")
+        self._validate_access_key(access_key)
+        normalized = self._normalize_resource_policies(resource_policies)
+        requested_specs = frozenset(spec for spec, _policy in normalized)
+
         with self._lock:
             return tuple(
                 RetiredResource(
-                    state.scope,
-                    state.requirement_key,
+                    state.access_key,
+                    state.resource_policies,
                     state.resources,
                     state.token,
                     state.request_id,
                 )
                 for state in self._records
-                if state.scope == scope
-                and state.requirement_key == requirement_key
+                if state.access_key == access_key
                 and state.retired
+                and frozenset(spec for spec, _policy in state.resource_policies)
+                == requested_specs
             )
 
     def reserve(
         self,
-        scope: ScopeT,
-        requirement: ResourceRequirement,
-    ) -> ResourceRequest[ScopeT] | ResourceLease[ScopeT, ResourceT] | None:
-        """Reserve/reuse one requirement according to its same-scope policy.
+        access_key: AccessKeyT,
+        resource_policies: Mapping[SpecT, ResourcePolicy],
+    ) -> ResourceRequest[AccessKeyT, SpecT] | None:
+        """Atomically reserve every Resource required by one Access.
 
-        A newly reserved acquisition is immediately a ``processing`` request in
-        the Pool, even before it has resources. SHARED may instead return an
-        already-installed lease. ``None`` means the request conflicts with a
-        retained/requested resource or a same-key SHARED acquisition is pending.
+        ``None`` means at least one Resource conflicts with a retained, retired, or
+        processing Resource for the same Access key. NON_BLOCKING Resources never
+        reuse an existing ResourceSet; a successful reserve always creates a fresh
+        request.
         """
 
-        self._validate_scope(scope)
-        self._validate_requirement(requirement)
+        self._validate_access_key(access_key)
+        normalized = self._normalize_resource_policies(resource_policies)
 
         with self._lock:
-            same_scope_records = [
-                state for state in self._records if state.scope == scope
-            ]
-            same_scope_requests = [
-                state for state in self._requests if state.scope == scope
-            ]
-
-            if requirement.policy is ResourcePolicy.EXCLUSIVE:
-                if same_scope_records or same_scope_requests:
+            for state in self._records:
+                if state.access_key == access_key and self._conflicts(
+                    state.resource_policies, normalized
+                ):
                     return None
-                return self._reserve_locked(scope, requirement)
-
-            if any(
-                state.policy is ResourcePolicy.EXCLUSIVE
-                for state in same_scope_records
-            ) or any(
-                state.policy is ResourcePolicy.EXCLUSIVE
-                for state in same_scope_requests
-            ):
-                return None
-
-            same_key_records = [
-                state
-                for state in same_scope_records
-                if state.requirement_key == requirement.key
-            ]
-            same_key_requests = [
-                state
-                for state in same_scope_requests
-                if state.requirement_key == requirement.key
-            ]
-
-            # One resource identity must not change coexistence semantics while any
-            # record/request for that identity still exists.
-            if any(state.policy is not requirement.policy for state in same_key_records):
-                return None
-            if any(state.policy is not requirement.policy for state in same_key_requests):
-                return None
-
-            if requirement.policy is ResourcePolicy.SHARED:
-                if any(state.retired for state in same_key_records):
+            for state in self._requests:
+                if state.access_key == access_key and self._conflicts(
+                    state.resource_policies, normalized
+                ):
                     return None
-                for state in same_key_records:
-                    if not state.retired:
-                        return self._lease_locked(state)
-                if same_key_requests:
-                    return None
-
-            return self._reserve_locked(scope, requirement)
+            return self._reserve_locked(access_key, normalized)
 
     def _reserve_locked(
         self,
-        scope: ScopeT,
-        requirement: ResourceRequirement,
-    ) -> ResourceRequest[ScopeT]:
+        access_key: AccessKeyT,
+        resource_policies: ResourcePolicies[SpecT],
+    ) -> ResourceRequest[AccessKeyT, SpecT]:
         request_id = RequestId(next(self._request_ids))
         token = object()
         state = _RequestState(
             request_id=request_id,
-            scope=scope,
-            requirement_key=requirement.key,
-            policy=requirement.policy,
+            access_key=access_key,
+            resource_policies=resource_policies,
             token=token,
         )
         self._requests.append(state)
-        return ResourceRequest(
-            request_id,
-            scope,
-            requirement.key,
-            requirement.policy,
-            token,
-        )
+        return ResourceRequest(request_id, access_key, resource_policies, token)
 
-    def is_interrupted(self, request: ResourceRequest[ScopeT]) -> bool:
+    def is_interrupted(self, request: ResourceRequest[AccessKeyT, SpecT]) -> bool:
         """Return whether the request should stop; stale requests are stopped."""
 
         self._validate_request(request)
@@ -332,18 +290,16 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def publish(
         self,
-        request: ResourceRequest[ScopeT],
+        request: ResourceRequest[AccessKeyT, SpecT],
         resources: ResourceSet[ResourceT],
     ) -> None:
-        """Publish a partial/current ResourceSet while the producer is processing.
-
-        Publishing remains legal after interruption so late resources keep their
-        Request ID ownership. It is illegal after ``finish``.
-        """
+        """Publish the current aggregate ResourceSet while processing."""
 
         self._validate_request(request)
         if resources is None:
             raise TypeError("resources cannot be None")
+        if not isinstance(resources, tuple):
+            raise TypeError("resources must be a ResourceSet tuple")
         with self._lock:
             state = self._require_request_locked(request)
             if not state.processing:
@@ -352,14 +308,9 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def interrupt(
         self,
-        request: ResourceRequest[ScopeT],
-    ) -> RequestInterruption[ScopeT, ResourceT]:
-        """Mark a request interrupted without pretending its producer has stopped.
-
-        If processing has already ended, interruption immediately retires the
-        ResourceSet (or drops an empty request) and transfers cleanup ownership to
-        the returned ``RetiredResource``. Repeated/stale interruption is harmless.
-        """
+        request: ResourceRequest[AccessKeyT, SpecT],
+    ) -> RequestInterruption[AccessKeyT, SpecT, ResourceT]:
+        """Mark a request interrupted without pretending its producers stopped."""
 
         self._validate_request(request)
         with self._lock:
@@ -376,17 +327,14 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def finish(
         self,
-        request: ResourceRequest[ScopeT],
+        request: ResourceRequest[AccessKeyT, SpecT],
         resources: ResourceSet[ResourceT] | None = None,
-    ) -> RetiredResource[ScopeT, ResourceT] | None:
-        """Atomically publish the final snapshot and set ``processing=False``.
-
-        An interrupted request is retired immediately once processing ends. If it
-        never produced resources, the request simply disappears. A successful,
-        non-interrupted request remains in the Pool until ``install`` consumes it.
-        """
+    ) -> RetiredResource[AccessKeyT, SpecT, ResourceT] | None:
+        """Atomically publish the final aggregate snapshot and end processing."""
 
         self._validate_request(request)
+        if resources is not None and not isinstance(resources, tuple):
+            raise TypeError("resources must be a ResourceSet tuple")
         with self._lock:
             state = self._require_request_locked(request)
             if not state.processing:
@@ -398,13 +346,8 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
                 return self._retire_request_locked(state)
             return None
 
-    def cancel(self, request: ResourceRequest[ScopeT]) -> bool:
-        """Cancel a request that is known not to have started producing resources.
-
-        This compatibility operation is intentionally strict: once any ResourceSet
-        has been published, callers must use ``interrupt`` + ``finish`` so late
-        resources cannot lose ownership.
-        """
+    def cancel(self, request: ResourceRequest[AccessKeyT, SpecT]) -> bool:
+        """Cancel a reserved request before any physical Resource is published."""
 
         self._validate_request(request)
         with self._lock:
@@ -418,15 +361,9 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def install(
         self,
-        request: ResourceRequest[ScopeT],
-        resources: ResourceSet[ResourceT] | None = None,
-    ) -> ResourceLease[ScopeT, ResourceT]:
-        """Consume one finished request and return the first retained lease.
-
-        ``resources`` is accepted only for compatibility with the old reservation
-        API. When supplied it must be the exact final ResourceSet snapshot already
-        recorded by ``finish``.
-        """
+        request: ResourceRequest[AccessKeyT, SpecT],
+    ) -> ResourceLease[AccessKeyT, SpecT, ResourceT]:
+        """Consume one finished request and retain its aggregate ResourceSet."""
 
         self._validate_request(request)
         with self._lock:
@@ -437,41 +374,29 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
                 raise RuntimeError("interrupted resource request cannot be installed")
             if state.resources is None:
                 raise RuntimeError("resource request has no final resources")
-            if resources is not None and resources is not state.resources:
-                raise RuntimeError("resources do not match the request's final snapshot")
 
             token = object()
             record = _RecordState(
-                scope=state.scope,
-                requirement_key=state.requirement_key,
-                policy=state.policy,
+                access_key=state.access_key,
+                resource_policies=state.resource_policies,
                 resources=state.resources,
                 token=token,
                 request_id=state.request_id,
             )
             self._records.append(record)
             self._requests.remove(state)
-            return self._lease_locked(record)
-
-    @staticmethod
-    def _lease_locked(
-        state: _RecordState[ScopeT, ResourceT],
-    ) -> ResourceLease[ScopeT, ResourceT]:
-        lease_token = object()
-        state.lease_tokens.add(lease_token)
-        return ResourceLease(
-            state.scope,
-            state.requirement_key,
-            state.resources,
-            state.token,
-            lease_token,
-        )
+            return ResourceLease(
+                record.access_key,
+                record.resource_policies,
+                record.resources,
+                record.token,
+            )
 
     def retire(
         self,
-        lease: ResourceLease[ScopeT, ResourceT],
-    ) -> RetiredResource[ScopeT, ResourceT] | None:
-        """Release one lease; retire the ResourceSet when its last lease detaches."""
+        lease: ResourceLease[AccessKeyT, SpecT, ResourceT],
+    ) -> RetiredResource[AccessKeyT, SpecT, ResourceT]:
+        """Release one lease and transfer its ResourceSet to cleanup ownership."""
 
         if not isinstance(lease, ResourceLease):
             raise TypeError("lease must be ResourceLease")
@@ -487,23 +412,20 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
                 raise RuntimeError("resource lease is already retired")
             if state.resources is not lease.resources:
                 raise RuntimeError("resource lease does not match retained resources")
-            if lease._lease_token not in state.lease_tokens:
-                raise RuntimeError("resource lease is not current")
-
-            state.lease_tokens.remove(lease._lease_token)
-            if state.lease_tokens:
-                return None
 
             state.retired = True
             return RetiredResource(
-                state.scope,
-                state.requirement_key,
+                state.access_key,
+                state.resource_policies,
                 state.resources,
                 state.token,
                 state.request_id,
             )
 
-    def discard(self, retired: RetiredResource[ScopeT, ResourceT]) -> None:
+    def discard(
+        self,
+        retired: RetiredResource[AccessKeyT, SpecT, ResourceT],
+    ) -> None:
         """Forget one exact retired record after physical cleanup succeeds."""
 
         if not isinstance(retired, RetiredResource):
@@ -528,14 +450,14 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
             del self._records[record_index]
 
     @staticmethod
-    def _validate_request(request: ResourceRequest[ScopeT]) -> None:
+    def _validate_request(request: ResourceRequest[AccessKeyT, SpecT]) -> None:
         if not isinstance(request, ResourceRequest):
             raise TypeError("request must be ResourceRequest")
 
     def _find_request_locked(
         self,
-        request: ResourceRequest[ScopeT],
-    ) -> _RequestState[ScopeT, ResourceT] | None:
+        request: ResourceRequest[AccessKeyT, SpecT],
+    ) -> _RequestState[AccessKeyT, SpecT, ResourceT] | None:
         return next(
             (
                 state
@@ -548,8 +470,8 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def _require_request_locked(
         self,
-        request: ResourceRequest[ScopeT],
-    ) -> _RequestState[ScopeT, ResourceT]:
+        request: ResourceRequest[AccessKeyT, SpecT],
+    ) -> _RequestState[AccessKeyT, SpecT, ResourceT]:
         state = self._find_request_locked(request)
         if state is None:
             raise RuntimeError("resource request is not current")
@@ -557,13 +479,12 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     @staticmethod
     def _request_record_locked(
-        state: _RequestState[ScopeT, ResourceT],
-    ) -> ResourceRequestRecord[ScopeT, ResourceT]:
+        state: _RequestState[AccessKeyT, SpecT, ResourceT],
+    ) -> ResourceRequestRecord[AccessKeyT, SpecT, ResourceT]:
         return ResourceRequestRecord(
             state.request_id,
-            state.scope,
-            state.requirement_key,
-            state.policy,
+            state.access_key,
+            state.resource_policies,
             state.resources,
             state.interrupted,
             state.processing,
@@ -571,17 +492,16 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
 
     def _retire_request_locked(
         self,
-        state: _RequestState[ScopeT, ResourceT],
-    ) -> RetiredResource[ScopeT, ResourceT] | None:
+        state: _RequestState[AccessKeyT, SpecT, ResourceT],
+    ) -> RetiredResource[AccessKeyT, SpecT, ResourceT] | None:
         self._requests.remove(state)
         if state.resources is None:
             return None
 
         token = object()
         record = _RecordState(
-            scope=state.scope,
-            requirement_key=state.requirement_key,
-            policy=state.policy,
+            access_key=state.access_key,
+            resource_policies=state.resource_policies,
             resources=state.resources,
             token=token,
             request_id=state.request_id,
@@ -589,15 +509,35 @@ class ResourcePool(Generic[ScopeT, ResourceT]):
         )
         self._records.append(record)
         return RetiredResource(
-            record.scope,
-            record.requirement_key,
+            record.access_key,
+            record.resource_policies,
             record.resources,
             record.token,
             record.request_id,
         )
 
+    @staticmethod
+    def _contains_spec(
+        resource_policies: ResourcePolicies[SpecT],
+        spec: SpecT,
+    ) -> bool:
+        return any(existing_spec == spec for existing_spec, _policy in resource_policies)
 
-GLOBAL_RESOURCE_POOL: ResourcePool[Any, Any] = ResourcePool()
+    @staticmethod
+    def _conflicts(
+        existing: ResourcePolicies[SpecT],
+        incoming: ResourcePolicies[SpecT],
+    ) -> bool:
+        for incoming_spec, _incoming_policy in incoming:
+            for existing_spec, existing_policy in existing:
+                if existing_spec != incoming_spec:
+                    continue
+                if existing_policy is ResourcePolicy.BLOCKING:
+                    return True
+        return False
+
+
+GLOBAL_RESOURCE_POOL: ResourcePool[Any, Any, Any] = ResourcePool()
 
 
 __all__ = [
@@ -605,10 +545,10 @@ __all__ = [
     "RequestId",
     "RequestInterruption",
     "ResourceLease",
+    "ResourcePolicies",
     "ResourcePool",
     "ResourceRecord",
     "ResourceRequest",
     "ResourceRequestRecord",
-    "ResourceReservation",
     "RetiredResource",
 ]

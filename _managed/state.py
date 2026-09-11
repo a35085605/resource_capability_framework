@@ -66,22 +66,24 @@ class Idle(Generic[GenerationT]):
 class Preparing(Generic[GenerationT, AccessT, SpecT, ResourceT]):
     generation: GenerationT
     access: AccessT
+    access_key: Hashable
     attempt: ManagedAttempt[GenerationT, AccessT]
     acquisition: ResourceAcquisition[SpecT, ResourceT] | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
+class Current(Generic[GenerationT, AccessT, SpecT, ResourceT, CapabilityT]):
     generation: GenerationT
     access: AccessT
+    access_key: Hashable
     capability: CapabilityT
-    resource_lease: ResourceLease[Hashable, ResourceT]
+    resource_lease: ResourceLease[Hashable, SpecT, ResourceT]
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
     | Preparing[GenerationT, AccessT, SpecT, ResourceT]
-    | Current[GenerationT, AccessT, ResourceT, CapabilityT]
+    | Current[GenerationT, AccessT, SpecT, ResourceT, CapabilityT]
 )
 
 
