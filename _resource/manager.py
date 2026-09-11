@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, TypeVar
 
-from _resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
+from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
 from _resource.plan import ResourcePlan
 from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
@@ -25,6 +25,7 @@ class ResourceAcquisition(Generic[SpecT, ResourceT]):
 
     _plan: ResourcePlan[SpecT]
     _request: ResourceRequest[Hashable]
+    _physical: PhysicalAcquisition[ResourceT]
     _manager_token: object
 
 
@@ -60,22 +61,6 @@ class ResourceManagement(Protocol[SpecT, ResourceT]):
     def release(self, lease: ResourceLease[Hashable, ResourceT]) -> None: ...
 
     def cleanup_retired(self, plan: ResourcePlan[SpecT]) -> bool: ...
-
-
-class _PoolAcquisitionContext:
-    """Driver-facing view backed by one Pool ResourceRequest."""
-
-    def __init__(
-        self,
-        pool: ResourcePool[Hashable, ResourceT],
-        request: ResourceRequest[Hashable],
-    ) -> None:
-        self._pool = pool
-        self._request = request
-
-    @property
-    def interrupted(self) -> bool:
-        return self._pool.is_interrupted(self._request)
 
 
 class ResourceManager(Generic[SpecT, ResourceT]):
@@ -118,30 +103,41 @@ class ResourceManager(Generic[SpecT, ResourceT]):
         claim = self._resource_pool.reserve(plan.scope, plan.requirement)
         if claim is None or isinstance(claim, ResourceLease):
             return claim
-        return ResourceAcquisition(plan, claim, self._token)
+
+        try:
+            physical = self._driver.prepare(plan.spec)
+        except BaseException:
+            self._resource_pool.cancel(claim)
+            raise
+
+        if physical is None:
+            self._resource_pool.cancel(claim)
+            raise TypeError("ResourceDriver.prepare() cannot return None")
+        return ResourceAcquisition(plan, claim, physical, self._token)
 
     def acquire(
         self,
         acquisition: ResourceAcquisition[SpecT, ResourceT],
     ) -> ResourceSet[ResourceT]:
         self._validate_acquisition(acquisition)
-        context = self._context(acquisition)
-        snapshots = self._driver.acquire(acquisition._plan.spec, context)
+        snapshots = acquisition._physical.acquire()
         if not isinstance(snapshots, Iterator):
-            raise TypeError("ResourceDriver.acquire() must return an Iterator")
+            raise TypeError("PhysicalAcquisition.acquire() must return an Iterator")
 
         resources: ResourceSet[ResourceT] | None = None
         for snapshot in snapshots:
             if snapshot is None:
-                raise TypeError("ResourceDriver.acquire() cannot yield None")
+                raise TypeError("PhysicalAcquisition.acquire() cannot yield None")
             if not isinstance(snapshot, tuple):
-                raise TypeError("ResourceDriver.acquire() must yield ResourceSet tuples")
+                raise TypeError(
+                    "PhysicalAcquisition.acquire() must yield ResourceSet tuples"
+                )
             resources = snapshot
             self._resource_pool.publish(acquisition._request, snapshot)
 
         if resources is None:
             raise RuntimeError(
-                "ResourceDriver.acquire() must yield at least one ResourceSet"
+                "PhysicalAcquisition.acquire() must yield at least one ResourceSet"
             )
 
         # Keep processing=true until upper-layer capability projection has
@@ -176,7 +172,7 @@ class ResourceManager(Generic[SpecT, ResourceT]):
         self._validate_acquisition(acquisition)
         interruption = self._resource_pool.interrupt(acquisition._request)
         if interruption.processing:
-            self._driver.interrupt(acquisition._plan.spec, self._context(acquisition))
+            acquisition._physical.interrupt()
         elif interruption.retired is not None:
             self._cleanup_retired(interruption.retired)
 
@@ -187,9 +183,9 @@ class ResourceManager(Generic[SpecT, ResourceT]):
     ) -> None:
         """Finish and clean a producer after upper-layer ownership was lost.
 
-        This does not call ``driver.interrupt``: by the time the upper layer uses
-        this operation, the acquire call has already returned or raised. A prior
-        concurrent ``interrupt`` may already have asked the backend to abort.
+        This does not call ``PhysicalAcquisition.interrupt``: by the time the upper
+        layer uses this operation, the acquire call has already returned or raised.
+        A prior concurrent ``interrupt`` may already have asked the backend to abort.
         """
 
         self._validate_acquisition(acquisition)
@@ -227,12 +223,6 @@ class ResourceManager(Generic[SpecT, ResourceT]):
             raise TypeError("acquisition must be ResourceAcquisition")
         if acquisition._manager_token is not self._token:
             raise RuntimeError("resource acquisition belongs to another manager")
-
-    def _context(
-        self,
-        acquisition: ResourceAcquisition[SpecT, ResourceT],
-    ) -> AcquisitionContext:
-        return _PoolAcquisitionContext(self._resource_pool, acquisition._request)
 
     def _cleanup_retired(
         self,

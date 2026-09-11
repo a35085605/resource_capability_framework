@@ -1,6 +1,6 @@
 """Physical resource planning, coordination, I/O, and cleanup primitives."""
 
-from _resource.driver import AcquisitionContext, ResourceDriver, ResourceSet
+from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
 from _resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
 from _resource.plan import ResourcePlan
 from _resource.pool import (
@@ -19,9 +19,9 @@ from _resource.requirement import ResourcePolicy, ResourceRequirement
 
 
 __all__ = [
-    "AcquisitionContext",
     "GLOBAL_RESOURCE_POOL",
     "RequestId",
+    "PhysicalAcquisition",
     "RequestInterruption",
     "ResourceAcquisition",
     "ResourceDriver",
