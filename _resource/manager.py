@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, TypeVar
 
 from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
-from _resource.policy import ResourcePolicy
 from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
     ResourceLease,
-    ResourcePolicies,
     ResourcePool,
     ResourceRequest,
     RetiredResource,
 )
+from _resource.requirement import ResourceRequirements
 
 
 SpecT = TypeVar("SpecT")
@@ -33,7 +32,7 @@ class ResourceAcquisition(Generic[SpecT, ResourceT]):
     """Opaque handle for one Access resource acquisition not yet committed."""
 
     _access_key: Hashable
-    _resource_policies: ResourcePolicies[SpecT]
+    _requirements: ResourceRequirements[SpecT]
     _request: ResourceRequest[Hashable, SpecT]
     _parts: tuple[_AcquisitionPart[SpecT, ResourceT], ...]
     _manager_token: object
@@ -46,7 +45,7 @@ class ResourceManagement(Protocol[SpecT, ResourceT]):
     def claim(
         self,
         access_key: Hashable,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> ResourceAcquisition[SpecT, ResourceT] | None: ...
 
     def acquire(
@@ -75,7 +74,7 @@ class ResourceManagement(Protocol[SpecT, ResourceT]):
     def cleanup_retired(
         self,
         access_key: Hashable,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> bool: ...
 
 
@@ -110,26 +109,26 @@ class ResourceManager(Generic[SpecT, ResourceT]):
     def claim(
         self,
         access_key: Hashable,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> ResourceAcquisition[SpecT, ResourceT] | None:
-        request = self._resource_pool.reserve(access_key, resource_policies)
+        request = self._resource_pool.reserve(access_key, requirements)
         if request is None:
             return None
 
         parts: list[_AcquisitionPart[SpecT, ResourceT]] = []
         try:
-            for spec, _policy in request.resource_policies:
-                physical = self._driver.prepare(spec)
+            for requirement in request.requirements:
+                physical = self._driver.prepare(requirement.spec)
                 if physical is None:
                     raise TypeError("ResourceDriver.prepare() cannot return None")
-                parts.append(_AcquisitionPart(spec, physical))
+                parts.append(_AcquisitionPart(requirement.spec, physical))
         except BaseException:
             self._resource_pool.cancel(request)
             raise
 
         return ResourceAcquisition(
             access_key,
-            request.resource_policies,
+            request.requirements,
             request,
             tuple(parts),
             self._token,
@@ -243,9 +242,9 @@ class ResourceManager(Generic[SpecT, ResourceT]):
     def cleanup_retired(
         self,
         access_key: Hashable,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> bool:
-        retired_records = self._resource_pool.retired(access_key, resource_policies)
+        retired_records = self._resource_pool.retired(access_key, requirements)
         if not retired_records:
             return False
         for retired in retired_records:

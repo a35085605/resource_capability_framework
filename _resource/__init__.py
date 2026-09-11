@@ -3,12 +3,12 @@
 from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
 from _resource.manager import ResourceAcquisition, ResourceManagement, ResourceManager
 from _resource.policy import ResourcePolicy
+from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.pool import (
     GLOBAL_RESOURCE_POOL,
     RequestId,
     RequestInterruption,
     ResourceLease,
-    ResourcePolicies,
     ResourcePool,
     ResourceRecord,
     ResourceRequest,
@@ -27,7 +27,8 @@ __all__ = [
     "ResourceLease",
     "ResourceManagement",
     "ResourceManager",
-    "ResourcePolicies",
+    "ResourceRequirement",
+    "ResourceRequirements",
     "ResourcePolicy",
     "ResourcePool",
     "ResourceRecord",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import count
 from threading import Lock
@@ -8,13 +7,12 @@ from typing import Any, Generic, Hashable, TypeVar
 
 from _resource.driver import ResourceSet
 from _resource.policy import ResourcePolicy
+from _resource.requirement import ResourceRequirement, ResourceRequirements
 
 
 AccessKeyT = TypeVar("AccessKeyT")
 SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
-
-type ResourcePolicies[T] = tuple[tuple[T, ResourcePolicy], ...]
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -30,7 +28,7 @@ class ResourceRequestRecord(Generic[AccessKeyT, SpecT, ResourceT]):
 
     request_id: RequestId
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT] | None
     interrupted: bool
     processing: bool
@@ -41,7 +39,7 @@ class ResourceRecord(Generic[AccessKeyT, SpecT, ResourceT]):
     """Immutable point-in-time view of one retained Access ResourceSet."""
 
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     retired: bool = False
     request_id: RequestId | None = None
@@ -53,7 +51,7 @@ class ResourceRequest(Generic[AccessKeyT, SpecT]):
 
     request_id: RequestId
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     _request_token: object
 
 
@@ -62,7 +60,7 @@ class ResourceLease(Generic[AccessKeyT, SpecT, ResourceT]):
     """Identity token retaining one installed Access ResourceSet."""
 
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     _record_token: object
 
@@ -72,7 +70,7 @@ class RetiredResource(Generic[AccessKeyT, SpecT, ResourceT]):
     """Exact retired record that remains retained until cleanup succeeds."""
 
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     _record_token: object
     request_id: RequestId | None = None
@@ -90,7 +88,7 @@ class RequestInterruption(Generic[AccessKeyT, SpecT, ResourceT]):
 class _RequestState(Generic[AccessKeyT, SpecT, ResourceT]):
     request_id: RequestId
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     token: object
     resources: ResourceSet[ResourceT] | None = None
     interrupted: bool = False
@@ -100,7 +98,7 @@ class _RequestState(Generic[AccessKeyT, SpecT, ResourceT]):
 @dataclass(slots=True)
 class _RecordState(Generic[AccessKeyT, SpecT, ResourceT]):
     access_key: AccessKeyT
-    resource_policies: ResourcePolicies[SpecT]
+    requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     token: object
     request_id: RequestId | None = None
@@ -110,8 +108,9 @@ class _RecordState(Generic[AccessKeyT, SpecT, ResourceT]):
 class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
     """Process-wide registry for Access-keyed Resource requests and leases.
 
-    Resource identity is the Resource spec supplied by ``AccessModel``. Policy is
-    considered only when the same Access key asks for the same Resource:
+    Resource identity is ``ResourceRequirement.spec`` from the implementation's
+    Access plan. Policy is considered only when the same Access key asks for the
+    same Resource spec:
 
     * BLOCKING: the Resource cannot coexist with another matching Resource.
     * NON_BLOCKING: matching Resources may be acquired independently.
@@ -138,20 +137,20 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
             raise TypeError("access_key must be hashable") from exc
 
     @staticmethod
-    def _normalize_resource_policies(
-        resource_policies: Mapping[SpecT, ResourcePolicy],
-    ) -> ResourcePolicies[SpecT]:
-        if not isinstance(resource_policies, Mapping):
-            raise TypeError("resource_policies must be a Mapping")
+    def _validate_requirements(
+        requirements: ResourceRequirements[SpecT],
+    ) -> ResourceRequirements[SpecT]:
+        if not isinstance(requirements, tuple):
+            raise TypeError("requirements must be a tuple")
 
-        normalized: list[tuple[SpecT, ResourcePolicy]] = []
-        for spec, policy in resource_policies.items():
-            if spec is None:
-                raise TypeError("resource spec cannot be None")
-            if not isinstance(policy, ResourcePolicy):
-                raise TypeError("resource policy must be ResourcePolicy")
-            normalized.append((spec, policy))
-        return tuple(normalized)
+        seen_specs: list[SpecT] = []
+        for requirement in requirements:
+            if not isinstance(requirement, ResourceRequirement):
+                raise TypeError("requirements must contain ResourceRequirement values")
+            if any(existing == requirement.spec for existing in seen_specs):
+                raise ValueError("requirements cannot contain duplicate resource specs")
+            seen_specs.append(requirement.spec)
+        return requirements
 
     def snapshot(self) -> tuple[ResourceRecord[AccessKeyT, SpecT, ResourceT], ...]:
         """Return immutable views of every retained Access ResourceSet."""
@@ -160,7 +159,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
             return tuple(
                 ResourceRecord(
                     state.access_key,
-                    state.resource_policies,
+                    state.requirements,
                     state.resources,
                     state.retired,
                     state.request_id,
@@ -205,25 +204,24 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
                 for state in self._records
                 if state.access_key == access_key
                 and not state.retired
-                and self._contains_spec(state.resource_policies, spec)
+                and self._contains_spec(state.requirements, spec)
             )
 
     def retired(
         self,
         access_key: AccessKeyT,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> tuple[RetiredResource[AccessKeyT, SpecT, ResourceT], ...]:
         """Return retired records matching one Access key and Resource spec set."""
 
         self._validate_access_key(access_key)
-        normalized = self._normalize_resource_policies(resource_policies)
-        requested_specs = frozenset(spec for spec, _policy in normalized)
+        normalized = self._validate_requirements(requirements)
 
         with self._lock:
             return tuple(
                 RetiredResource(
                     state.access_key,
-                    state.resource_policies,
+                    state.requirements,
                     state.resources,
                     state.token,
                     state.request_id,
@@ -231,14 +229,13 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
                 for state in self._records
                 if state.access_key == access_key
                 and state.retired
-                and frozenset(spec for spec, _policy in state.resource_policies)
-                == requested_specs
+                and self._same_spec_set(state.requirements, normalized)
             )
 
     def reserve(
         self,
         access_key: AccessKeyT,
-        resource_policies: Mapping[SpecT, ResourcePolicy],
+        requirements: ResourceRequirements[SpecT],
     ) -> ResourceRequest[AccessKeyT, SpecT] | None:
         """Atomically reserve every Resource required by one Access.
 
@@ -249,17 +246,17 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         """
 
         self._validate_access_key(access_key)
-        normalized = self._normalize_resource_policies(resource_policies)
+        normalized = self._validate_requirements(requirements)
 
         with self._lock:
             for state in self._records:
                 if state.access_key == access_key and self._conflicts(
-                    state.resource_policies, normalized
+                    state.requirements, normalized
                 ):
                     return None
             for state in self._requests:
                 if state.access_key == access_key and self._conflicts(
-                    state.resource_policies, normalized
+                    state.requirements, normalized
                 ):
                     return None
             return self._reserve_locked(access_key, normalized)
@@ -267,18 +264,18 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
     def _reserve_locked(
         self,
         access_key: AccessKeyT,
-        resource_policies: ResourcePolicies[SpecT],
+        requirements: ResourceRequirements[SpecT],
     ) -> ResourceRequest[AccessKeyT, SpecT]:
         request_id = RequestId(next(self._request_ids))
         token = object()
         state = _RequestState(
             request_id=request_id,
             access_key=access_key,
-            resource_policies=resource_policies,
+            requirements=requirements,
             token=token,
         )
         self._requests.append(state)
-        return ResourceRequest(request_id, access_key, resource_policies, token)
+        return ResourceRequest(request_id, access_key, requirements, token)
 
     def is_interrupted(self, request: ResourceRequest[AccessKeyT, SpecT]) -> bool:
         """Return whether the request should stop; stale requests are stopped."""
@@ -378,7 +375,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
             token = object()
             record = _RecordState(
                 access_key=state.access_key,
-                resource_policies=state.resource_policies,
+                requirements=state.requirements,
                 resources=state.resources,
                 token=token,
                 request_id=state.request_id,
@@ -387,7 +384,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
             self._requests.remove(state)
             return ResourceLease(
                 record.access_key,
-                record.resource_policies,
+                record.requirements,
                 record.resources,
                 record.token,
             )
@@ -416,7 +413,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
             state.retired = True
             return RetiredResource(
                 state.access_key,
-                state.resource_policies,
+                state.requirements,
                 state.resources,
                 state.token,
                 state.request_id,
@@ -484,7 +481,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         return ResourceRequestRecord(
             state.request_id,
             state.access_key,
-            state.resource_policies,
+            state.requirements,
             state.resources,
             state.interrupted,
             state.processing,
@@ -501,7 +498,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         token = object()
         record = _RecordState(
             access_key=state.access_key,
-            resource_policies=state.resource_policies,
+            requirements=state.requirements,
             resources=state.resources,
             token=token,
             request_id=state.request_id,
@@ -510,7 +507,7 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
         self._records.append(record)
         return RetiredResource(
             record.access_key,
-            record.resource_policies,
+            record.requirements,
             record.resources,
             record.token,
             record.request_id,
@@ -518,21 +515,31 @@ class ResourcePool(Generic[AccessKeyT, SpecT, ResourceT]):
 
     @staticmethod
     def _contains_spec(
-        resource_policies: ResourcePolicies[SpecT],
+        requirements: ResourceRequirements[SpecT],
         spec: SpecT,
     ) -> bool:
-        return any(existing_spec == spec for existing_spec, _policy in resource_policies)
+        return any(requirement.spec == spec for requirement in requirements)
+
+    @staticmethod
+    def _same_spec_set(
+        left: ResourceRequirements[SpecT],
+        right: ResourceRequirements[SpecT],
+    ) -> bool:
+        return len(left) == len(right) and all(
+            any(candidate.spec == requirement.spec for candidate in right)
+            for requirement in left
+        )
 
     @staticmethod
     def _conflicts(
-        existing: ResourcePolicies[SpecT],
-        incoming: ResourcePolicies[SpecT],
+        existing: ResourceRequirements[SpecT],
+        incoming: ResourceRequirements[SpecT],
     ) -> bool:
-        for incoming_spec, _incoming_policy in incoming:
-            for existing_spec, existing_policy in existing:
-                if existing_spec != incoming_spec:
+        for incoming_requirement in incoming:
+            for existing_requirement in existing:
+                if existing_requirement.spec != incoming_requirement.spec:
                     continue
-                if existing_policy is ResourcePolicy.BLOCKING:
+                if existing_requirement.policy is ResourcePolicy.BLOCKING:
                     return True
         return False
 
@@ -545,7 +552,6 @@ __all__ = [
     "RequestId",
     "RequestInterruption",
     "ResourceLease",
-    "ResourcePolicies",
     "ResourcePool",
     "ResourceRecord",
     "ResourceRequest",

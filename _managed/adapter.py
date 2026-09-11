@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Generic, Hashable, Protocol, TypeVar
 
 from _capability.projection import CapabilityProjection
 from _resource.manager import ResourceManagement
-from _resource.policy import ResourcePolicy
+from _resource.requirement import ResourceRequirement, ResourceRequirements
 
 
 AccessT = TypeVar("AccessT")
@@ -17,36 +15,37 @@ CapabilityT = TypeVar("CapabilityT")
 
 
 @dataclass(frozen=True, slots=True)
-class AccessResources(Generic[SpecT]):
-    """Resource mapping for one logical Access identity."""
+class AccessPlan(Generic[SpecT]):
+    """Implementation-specific resource semantics for one logical Access identity."""
 
     key: Hashable
-    resources: Mapping[SpecT, ResourcePolicy]
+    requirements: ResourceRequirements[SpecT]
 
     def __post_init__(self) -> None:
         if self.key is None:
-            raise TypeError("access resource key cannot be None")
+            raise TypeError("access plan key cannot be None")
         try:
             hash(self.key)
         except TypeError as exc:
-            raise TypeError("access resource key must be hashable") from exc
-        if not isinstance(self.resources, Mapping):
-            raise TypeError("access resources must be a Mapping")
+            raise TypeError("access plan key must be hashable") from exc
+        if not isinstance(self.requirements, tuple):
+            raise TypeError("access plan requirements must be a tuple")
 
-        resources = dict(self.resources)
-        for spec, policy in resources.items():
-            if spec is None:
-                raise TypeError("resource spec cannot be None")
-            if not isinstance(policy, ResourcePolicy):
-                raise TypeError("resource policy must be ResourcePolicy")
-
-        object.__setattr__(self, "resources", MappingProxyType(resources))
+        seen_specs: list[SpecT] = []
+        for requirement in self.requirements:
+            if not isinstance(requirement, ResourceRequirement):
+                raise TypeError(
+                    "access plan requirements must contain ResourceRequirement values"
+                )
+            if any(existing == requirement.spec for existing in seen_specs):
+                raise ValueError("access plan cannot contain duplicate resource specs")
+            seen_specs.append(requirement.spec)
 
 
 class AccessModel(Protocol[AccessT, SpecT]):
-    """Map managed Access to its logical key and required physical Resources."""
+    """Project an Access through this implementation's resource semantics."""
 
-    def resources(self, access: AccessT) -> AccessResources[SpecT]: ...
+    def plan(self, access: AccessT) -> AccessPlan[SpecT]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,4 +55,4 @@ class Adapter(Generic[AccessT, SpecT, ResourceT, CapabilityT]):
     capability_projection: CapabilityProjection[AccessT, ResourceT, CapabilityT]
 
 
-__all__ = ["AccessModel", "AccessResources", "Adapter"]
+__all__ = ["AccessModel", "AccessPlan", "Adapter", "ResourceRequirement"]

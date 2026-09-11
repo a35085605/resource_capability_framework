@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class ResourcePolicy(Enum):
-    """Whether an existing Resource blocks the same Access from acquiring it again."""
+    """Whether an existing matching requirement blocks the same Access again."""
 
     BLOCKING = "blocking"
     NON_BLOCKING = "non_blocking"

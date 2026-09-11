@@ -1,6 +1,6 @@
 """Managed Access authority and capability coordination primitives."""
 
-from _managed.adapter import AccessModel, AccessResources, Adapter
+from _managed.adapter import AccessModel, AccessPlan, Adapter, ResourceRequirement
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
     AcquireAccessMismatch,
@@ -22,7 +22,7 @@ from _managed.state import Current, Idle, ManagedAttempt, ManagedState, Preparin
 
 __all__ = [
     "AccessModel",
-    "AccessResources",
+    "AccessPlan",
     "AcquireAccessMismatch",
     "AcquireBusy",
     "AcquireCommitted",
@@ -42,5 +42,6 @@ __all__ = [
     "ReleaseDetached",
     "ReleaseInactive",
     "ReleaseResult",
+    "ResourceRequirement",
     "Snapshot",
 ]

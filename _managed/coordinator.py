@@ -4,7 +4,7 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, Hashable, TypeVar
 
-from _managed.adapter import AccessResources, Adapter
+from _managed.adapter import AccessPlan, Adapter
 from _managed.result import (
     AcquireAccessMismatch,
     AcquireBusy,
@@ -39,12 +39,12 @@ class ManagedCoordinator(
     """Coordinate Access authority without owning physical-resource mechanics.
 
     Access identity and Resource requirements come from ``AccessModel`` as one
-    ``AccessResources`` mapping. ResourceManagement owns Access-keyed conflicts,
-    physical I/O, retirement, and cleanup.
+    implementation-specific ``AccessPlan``. ResourceManagement owns Access-keyed
+    conflicts, physical I/O, retirement, and cleanup.
 
     Simplified acquire sequence::
 
-        Access -> AccessResources(key, {ResourceSpec: Policy})
+        Access -> AccessPlan(key, ResourceRequirement(spec, policy), ...)
         -> claim -> acquire -> Capability -> commit lease + Current
     """
 
@@ -89,7 +89,7 @@ class ManagedCoordinator(
             if expected != self._state.generation:
                 return GenerationMismatch(self._state.generation)
 
-        access_resources = self._access_resources(access)
+        access_plan = self._access_plan(access)
 
         with self._lock:
             state = self._state
@@ -97,7 +97,7 @@ class ManagedCoordinator(
                 return GenerationMismatch(state.generation)
             if isinstance(state, Current):
                 snapshot = self._snapshot_locked()
-                if state.access_key == access_resources.key:
+                if state.access_key == access_plan.key:
                     return AcquireExisting(snapshot)
                 return AcquireAccessMismatch(state.access)
             if isinstance(state, Preparing):
@@ -112,7 +112,7 @@ class ManagedCoordinator(
             self._state = Preparing(
                 state.generation,
                 access,
-                access_resources.key,
+                access_plan.key,
                 attempt,
             )
 
@@ -126,8 +126,8 @@ class ManagedCoordinator(
                 return self._finish_superseded(attempt)
 
             acquisition = manager.claim(
-                access_resources.key,
-                access_resources.resources,
+                access_plan.key,
+                access_plan.requirements,
             )
             if acquisition is None:
                 abandoned, current_generation = self._abandon_if_current(attempt)
@@ -229,7 +229,7 @@ class ManagedCoordinator(
             if isinstance(state, Idle):
                 return ReleaseInactive()
 
-        access_resources = self._access_resources(access)
+        access_plan = self._access_plan(access)
         acquisition: ResourceAcquisition[SpecT, ResourceT] | None = None
         lease: ResourceLease[Hashable, SpecT, ResourceT] | None = None
         next_generation: GenerationT | None = None
@@ -243,7 +243,7 @@ class ManagedCoordinator(
                 return ReleaseInactive()
 
             if isinstance(state, Preparing):
-                if state.access_key != access_resources.key:
+                if state.access_key != access_plan.key:
                     return ReleaseAccessMismatch(state.access)
                 next_generation = self._fresh_generation(state.generation)
                 state.attempt.revoke()
@@ -253,7 +253,7 @@ class ManagedCoordinator(
             else:
                 if not isinstance(state, Current):
                     raise RuntimeError("unsupported Managed state")
-                if state.access_key != access_resources.key:
+                if state.access_key != access_plan.key:
                     return ReleaseAccessMismatch(state.access)
 
                 next_generation = self._fresh_generation(state.generation)
@@ -278,17 +278,17 @@ class ManagedCoordinator(
 
         if access is None:
             raise TypeError("access cannot be None")
-        access_resources = self._access_resources(access)
+        access_plan = self._access_plan(access)
         return self._adapter.resource_manager.cleanup_retired(
-            access_resources.key,
-            access_resources.resources,
+            access_plan.key,
+            access_plan.requirements,
         )
 
-    def _access_resources(self, access: AccessT) -> AccessResources[SpecT]:
-        access_resources = self._adapter.access_model.resources(access)
-        if not isinstance(access_resources, AccessResources):
-            raise TypeError("AccessModel.resources() must return AccessResources")
-        return access_resources
+    def _access_plan(self, access: AccessT) -> AccessPlan[SpecT]:
+        access_plan = self._adapter.access_model.plan(access)
+        if not isinstance(access_plan, AccessPlan):
+            raise TypeError("AccessModel.plan() must return AccessPlan")
+        return access_plan
 
     def _snapshot_locked(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
         state = self._state
