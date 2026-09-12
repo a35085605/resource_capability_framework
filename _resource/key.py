@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, TypeVar
 
+from _resource.requirement import ResourceRequirement
 
-SpecT = TypeVar("SpecT", contravariant=True)
+
+RequirementT = TypeVar("RequirementT", bound=ResourceRequirement, contravariant=True)
 IdentityT = TypeVar("IdentityT", bound=Hashable)
 
 
@@ -38,10 +40,10 @@ class ResourceKey(Generic[IdentityT]):
             ) from exc
 
 
-class ResourceKeyModel(Protocol[SpecT]):
-    """Canonicalize a physical-resource spec before any physical I/O starts."""
+class ResourceKeyModel(Protocol[RequirementT]):
+    """Canonicalize a resource requirement before any physical I/O starts."""
 
-    def key_for(self, spec: SpecT) -> ResourceKey: ...
+    def key_for(self, requirement: RequirementT) -> ResourceKey: ...
 
 
 type ResourceKeys = tuple[ResourceKey, ...]

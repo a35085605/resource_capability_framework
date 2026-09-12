@@ -1,29 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Protocol, runtime_checkable
 
 from _resource.policy import ResourcePolicy
 
 
-SpecT = TypeVar("SpecT")
+@runtime_checkable
+class ResourceRequirement(Protocol):
+    """Implementation-specific descriptor for one logical resource requirement.
+
+    Concrete resource domains carry their acquisition inputs directly on the
+    requirement value. ``policy`` remains the only framework-defined field.
+    """
+
+    @property
+    def policy(self) -> ResourcePolicy: ...
 
 
-@dataclass(frozen=True, slots=True)
-class ResourceRequirement(Generic[SpecT]):
-    """One implementation-specific requirement for a physical-resource spec."""
-
-    spec: SpecT
-    policy: ResourcePolicy
-
-    def __post_init__(self) -> None:
-        if self.spec is None:
-            raise TypeError("resource spec cannot be None")
-        if not isinstance(self.policy, ResourcePolicy):
-            raise TypeError("resource policy must be ResourcePolicy")
-
-
-type ResourceRequirements[T] = tuple[ResourceRequirement[T], ...]
+type ResourceRequirements[T: ResourceRequirement] = tuple[T, ...]
 
 
 __all__ = ["ResourceRequirement", "ResourceRequirements"]

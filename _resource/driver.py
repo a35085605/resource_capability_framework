@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
+from _resource.requirement import ResourceRequirement
 
-SpecT = TypeVar("SpecT", contravariant=True)
+
+RequirementT = TypeVar("RequirementT", bound=ResourceRequirement, contravariant=True)
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
@@ -68,18 +70,22 @@ class PhysicalAcquisition(Protocol[PhysicalResourceT]):
     def interrupt(self) -> None: ...
 
 
-class ResourceDriver(Protocol[SpecT, PhysicalResourceT]):
-    """Physical resource I/O driven only by a lower-layer resource specification.
+class ResourceDriver(Protocol[RequirementT, PhysicalResourceT]):
+    """Physical resource I/O driven only by a resource requirement.
 
     Drivers do not know about managed Request, generations, authority, conflict
-    policy, pool request identity, leases, or capability projection. ``prepare``
+    policy semantics, pool request identity, leases, or capability projection.
+    ``prepare`` consumes the implementation-specific requirement descriptor and
     creates a dedicated physical-operation handle without starting PhysicalResource
     production; calling its ``acquire`` method performs the I/O and returns one final
     typed outcome. ResourceManager remains solely responsible for Pool publication,
     ownership bookkeeping, retirement, and cleanup.
     """
 
-    def prepare(self, spec: SpecT) -> PhysicalAcquisition[PhysicalResourceT]: ...
+    def prepare(
+        self,
+        requirement: RequirementT,
+    ) -> PhysicalAcquisition[PhysicalResourceT]: ...
 
     def cleanup(self, resources: PhysicalResourceSet[PhysicalResourceT]) -> None: ...
 
