@@ -18,13 +18,6 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
-class Preparing(Generic[GenerationT, RequestT, PhysicalResourceT]):
-    generation: GenerationT
-    request: RequestT
-    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
-
-
-@dataclass(frozen=True, slots=True)
 class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
     generation: GenerationT
     request: RequestT
@@ -32,11 +25,20 @@ class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
     attempt: ResourceAttempt[RequestT, PhysicalResourceT]
 
 
+@dataclass(frozen=True, slots=True)
+class CleanupPending(Generic[GenerationT, RequestT, PhysicalResourceT]):
+    """Managed authority is detached while synchronous cleanup awaits retry."""
+
+    generation: GenerationT
+    request: RequestT
+    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
+
+
 ManagedState: TypeAlias = (
     Idle[GenerationT]
-    | Preparing[GenerationT, RequestT, PhysicalResourceT]
     | Current[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
+    | CleanupPending[GenerationT, RequestT, PhysicalResourceT]
 )
 
 
-__all__ = ["Current", "Idle", "ManagedState", "Preparing"]
+__all__ = ["CleanupPending", "Current", "Idle", "ManagedState"]

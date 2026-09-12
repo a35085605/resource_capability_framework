@@ -11,16 +11,14 @@ from _managed.result import (
     AcquireCommitted,
     AcquireExisting,
     AcquireResult,
-    AcquireSuperseded,
     GenerationMismatch,
     ReleaseRequestMismatch,
-    ReleaseAcquisitionRevoked,
     ReleaseDetached,
     ReleaseInactive,
     ReleaseResult,
 )
 from _managed.snapshot import Snapshot
-from _managed.state import Current, Idle, ManagedState, Preparing
+from _managed.state import CleanupPending, Current, Idle, ManagedState
 from _resource.manager import ResourceAttempt, ResourceManagement
 from _resource.result import ResourceBlocked, ResourceFailed, ResourceReady
 
@@ -32,12 +30,11 @@ CapabilityT = TypeVar("CapabilityT")
 
 
 class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
-    """Coordinate Managed Request state while ResourceManagement owns PhysicalResources.
+    """Coordinate a serial Managed lifecycle over synchronous ResourceManagement.
 
-    Managed state contains only generation, Request value, opaque attempt handle,
-    and published Capability.  Physical-resource attempt lifecycle, reservation, physical
-    I/O, interruption, retention, retirement, and cleanup stay below the
-    ResourceManagement boundary.
+    Only one ``acquire`` or ``release`` operation executes at a time for this coordinator.
+    Resource acquisition, capability projection, and cleanup complete synchronously.
+    Cleanup failures retain the attempt in ``CleanupPending`` for an explicit retry.
     """
 
     def __init__(
@@ -53,12 +50,11 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         self._issue_generation = issue_generation
         self._resource_manager = resource_manager
         self._capability_projection = capability_projection
+        self._operation_lock = Lock()
         self._lock = Lock()
         self._state: ManagedState[
             GenerationT, RequestT, PhysicalResourceT, CapabilityT
-        ] = (
-            Idle(issue_generation())
-        )
+        ] = Idle(issue_generation())
 
     def read(self) -> Snapshot[GenerationT, RequestT, CapabilityT]:
         with self._lock:
@@ -74,84 +70,55 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         if request is None:
             raise TypeError("request cannot be None")
 
-        manager = self._resource_manager
-        with self._lock:
-            state = self._state
-            if expected != state.generation:
-                return GenerationMismatch(state.generation)
-            if isinstance(state, Current):
-                snapshot = self._snapshot_locked()
-                if state.request == request:
-                    return AcquireExisting(snapshot)
-                return AcquireRequestMismatch(state.request)
-            if isinstance(state, Preparing):
-                return AcquireBusy()
-            if not isinstance(state, Idle):
-                raise RuntimeError("unsupported Managed state")
+        with self._operation_lock:
+            with self._lock:
+                state = self._state
+                if expected != state.generation:
+                    return GenerationMismatch(state.generation)
+                if isinstance(state, Current):
+                    snapshot = self._snapshot_locked()
+                    if state.request == request:
+                        return AcquireExisting(snapshot)
+                    return AcquireRequestMismatch(state.request)
+                if isinstance(state, CleanupPending):
+                    return AcquireBusy()
+                if not isinstance(state, Idle):
+                    raise RuntimeError("unsupported Managed state")
+                generation = state.generation
 
-            attempt = manager.open_attempt()
-            self._state = Preparing(
-                state.generation,
-                request,
-                attempt,
-            )
+            attempt = self._resource_manager.open_attempt()
 
-        try:
             def project(resources: tuple[PhysicalResourceT, ...]) -> CapabilityT:
                 capability = self._capability_projection.project(request, resources)
                 if capability is None:
                     raise TypeError("CapabilityProjection.project() cannot return None")
                 return capability
 
-            result = attempt.acquire(request, project)
+            try:
+                result = attempt.acquire(request, project)
+            except BaseException:
+                self._retain_cleanup_if_needed(generation, request, attempt)
+                raise
 
             if isinstance(result, ResourceBlocked):
-                abandoned, current_generation = self._abandon_if_current(attempt)
-                if abandoned:
-                    return AcquireBusy()
-                return AcquireSuperseded(current_generation)
+                return AcquireBusy()
 
             if isinstance(result, ResourceFailed):
-                abandoned, current_generation = self._abandon_if_current(attempt)
-                if not abandoned:
-                    attempt.release()
-                    return AcquireSuperseded(current_generation)
-                attempt.release()
+                self._retain_cleanup_if_needed(generation, request, attempt)
                 raise result.error
 
             if not isinstance(result, ResourceReady):
                 raise RuntimeError("unsupported ResourceManagement acquire result")
 
-            capability = result.value
-
+            snapshot = Snapshot(generation, request, result.value)
             with self._lock:
-                state = self._state
-                owns_authority = (
-                    isinstance(state, Preparing)
-                    and state.attempt is attempt
+                self._state = Current(
+                    generation,
+                    request,
+                    result.value,
+                    attempt,
                 )
-                if owns_authority:
-                    snapshot = Snapshot(state.generation, request, capability)
-                    self._state = Current(
-                        state.generation,
-                        request,
-                        capability,
-                        attempt,
-                    )
-                    return AcquireCommitted(snapshot)
-                current_generation = state.generation
-
-            attempt.release()
-            return AcquireSuperseded(current_generation)
-
-        except BaseException as exc:
-            self._abandon_if_current(attempt)
-            try:
-                attempt.release()
-            except Exception as release_error:
-                if isinstance(exc, Exception):
-                    exc.add_note(f"resource release also failed: {release_error!r}")
-            raise
+            return AcquireCommitted(snapshot)
 
     def release(
         self,
@@ -163,41 +130,30 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         if request is None:
             raise TypeError("request cannot be None")
 
-        next_generation: GenerationT | None = None
-        attempt: ResourceAttempt[RequestT, PhysicalResourceT] | None = None
-        preparing = False
-
-        with self._lock:
-            state = self._state
-            if expected != state.generation:
-                return GenerationMismatch(state.generation)
-            if isinstance(state, Idle):
-                return ReleaseInactive()
-
-            if isinstance(state, Preparing):
-                if state.request != request:
-                    return ReleaseRequestMismatch(state.request)
-                next_generation = self._fresh_generation(state.generation)
-                attempt = state.attempt
-                preparing = True
-            else:
-                if not isinstance(state, Current):
+        with self._operation_lock:
+            with self._lock:
+                state = self._state
+                if expected != state.generation:
+                    return GenerationMismatch(state.generation)
+                if isinstance(state, Idle):
+                    return ReleaseInactive()
+                if not isinstance(state, (Current, CleanupPending)):
                     raise RuntimeError("unsupported Managed state")
                 if state.request != request:
                     return ReleaseRequestMismatch(state.request)
-                next_generation = self._fresh_generation(state.generation)
+
+                generation = state.generation
                 attempt = state.attempt
+                # Capability authority ends before physical cleanup starts. If cleanup
+                # fails, the same attempt remains here for an explicit retry.
+                self._state = CleanupPending(generation, request, attempt)
 
-            self._state = Idle(next_generation)
+            attempt.release()
 
-        # Detach Managed authority before retiring the physical-resource attempt.  Physical
-        # interruption and cleanup continue independently below this boundary.
-        assert attempt is not None
-        assert next_generation is not None
-        attempt.release()
-        if preparing:
-            return ReleaseAcquisitionRevoked(next_generation)
-        return ReleaseDetached(next_generation)
+            next_generation = self._fresh_generation(generation)
+            with self._lock:
+                self._state = Idle(next_generation)
+            return ReleaseDetached(next_generation)
 
     def _snapshot_locked(self) -> Snapshot[GenerationT, RequestT, CapabilityT]:
         state = self._state
@@ -211,16 +167,16 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             raise RuntimeError("issue_generation must return a fresh generation")
         return next_generation
 
-    def _abandon_if_current(
+    def _retain_cleanup_if_needed(
         self,
+        generation: GenerationT,
+        request: RequestT,
         attempt: ResourceAttempt[RequestT, PhysicalResourceT],
-    ) -> tuple[bool, GenerationT]:
+    ) -> None:
+        if not attempt.cleanup_pending:
+            return
         with self._lock:
-            state = self._state
-            if isinstance(state, Preparing) and state.attempt is attempt:
-                self._state = Idle(state.generation)
-                return True, state.generation
-            return False, state.generation
+            self._state = CleanupPending(generation, request, attempt)
 
 
 __all__ = ["ManagedCoordinator"]

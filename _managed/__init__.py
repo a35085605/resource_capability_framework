@@ -8,16 +8,14 @@ from _managed.result import (
     AcquireCommitted,
     AcquireExisting,
     AcquireResult,
-    AcquireSuperseded,
     GenerationMismatch,
     ReleaseRequestMismatch,
-    ReleaseAcquisitionRevoked,
     ReleaseDetached,
     ReleaseInactive,
     ReleaseResult,
 )
 from _managed.snapshot import Snapshot
-from _managed.state import Current, Idle, ManagedState, Preparing
+from _managed.state import CleanupPending, Current, Idle, ManagedState
 
 
 __all__ = [
@@ -26,16 +24,14 @@ __all__ = [
     "AcquireCommitted",
     "AcquireExisting",
     "AcquireResult",
-    "AcquireSuperseded",
     "AttemptId",
+    "CleanupPending",
     "Current",
     "GenerationMismatch",
     "Idle",
     "ManagedCoordinator",
     "ManagedState",
-    "Preparing",
     "ReleaseRequestMismatch",
-    "ReleaseAcquisitionRevoked",
     "ReleaseDetached",
     "ReleaseInactive",
     "ReleaseResult",

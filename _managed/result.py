@@ -18,7 +18,7 @@ class GenerationMismatch(Generic[GenerationT]):
 
 @dataclass(frozen=True, slots=True)
 class AcquireBusy:
-    """The coordinator or Resource pool is already preparing/retaining resources."""
+    """The resource pool or pending cleanup prevents acquisition."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,18 +36,12 @@ class AcquireCommitted(Generic[GenerationT, RequestT, CapabilityT]):
     snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
 
 
-@dataclass(frozen=True, slots=True)
-class AcquireSuperseded(Generic[GenerationT]):
-    current_generation: GenerationT
-
-
 AcquireResult: TypeAlias = (
     GenerationMismatch[GenerationT]
     | AcquireBusy
     | AcquireExisting[GenerationT, RequestT, CapabilityT]
     | AcquireRequestMismatch[RequestT]
     | AcquireCommitted[GenerationT, RequestT, CapabilityT]
-    | AcquireSuperseded[GenerationT]
 )
 
 
@@ -58,18 +52,13 @@ class ReleaseRequestMismatch(Generic[RequestT]):
 
 @dataclass(frozen=True, slots=True)
 class ReleaseInactive:
-    """Current generation has no active Request to detach."""
-
-
-@dataclass(frozen=True, slots=True)
-class ReleaseAcquisitionRevoked(Generic[GenerationT]):
-    """An in-flight Managed attempt lost commit authority and may be draining."""
-
-    next_generation: GenerationT
+    """Current generation has no active or cleanup-pending Request."""
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseDetached(Generic[GenerationT]):
+    """Synchronous cleanup completed and Managed returned to Idle."""
+
     next_generation: GenerationT
 
 
@@ -77,7 +66,6 @@ ReleaseResult: TypeAlias = (
     GenerationMismatch[GenerationT]
     | ReleaseRequestMismatch[RequestT]
     | ReleaseInactive
-    | ReleaseAcquisitionRevoked[GenerationT]
     | ReleaseDetached[GenerationT]
 )
 
@@ -88,10 +76,8 @@ __all__ = [
     "AcquireCommitted",
     "AcquireExisting",
     "AcquireResult",
-    "AcquireSuperseded",
     "GenerationMismatch",
     "ReleaseRequestMismatch",
-    "ReleaseAcquisitionRevoked",
     "ReleaseDetached",
     "ReleaseInactive",
     "ReleaseResult",

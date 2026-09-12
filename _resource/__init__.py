@@ -2,19 +2,15 @@
 
 from _attempt import AttemptId
 from _resource.claim import ResourceClaim, ResourceClaims
-from _resource.cleanup import CleanupScheduler, DaemonThreadCleanupScheduler
 from _resource.driver import (
     PhysicalAcquireOutcome,
     PhysicalAcquired,
-    PhysicalAcquisition,
     PhysicalFailed,
-    PhysicalInterrupted,
     ResourceDriver,
     PhysicalResourceSet,
 )
 from _resource.key import ResourceKey, ResourceKeyModel, ResourceKeys
 from _resource.manager import (
-    ResourceAcquisitionCancelled,
     ResourceAttempt,
     ResourceManagement,
     ResourceManager,
@@ -39,19 +35,14 @@ from _resource.result import (
 
 __all__ = [
     "AttemptId",
-    "CleanupScheduler",
     "ResourceClaim",
     "ResourceClaims",
-    "DaemonThreadCleanupScheduler",
     "GLOBAL_RESOURCE_POOL",
     "GLOBAL_RESOURCE_RESERVATION_TABLE",
     "PhysicalAcquireOutcome",
     "PhysicalAcquired",
-    "PhysicalAcquisition",
     "PhysicalFailed",
-    "PhysicalInterrupted",
     "PhysicalResourceSet",
-    "ResourceAcquisitionCancelled",
     "ResourceAttempt",
     "ResourceKey",
     "ResourceKeyModel",
