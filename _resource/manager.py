@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock, Thread
 from typing import Generic, Protocol, TypeVar
 
 from _attempt import AttemptId
-from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
+from _resource.driver import (
+    PhysicalAcquired,
+    PhysicalAcquisition,
+    PhysicalFailed,
+    PhysicalInterrupted,
+    ResourceDriver,
+    ResourceSet,
+)
 from _resource.pool import GLOBAL_RESOURCE_POOL, ResourcePool, RetiredResource
 from _resource.requirement import ResourceRequirements
 from _resource.result import (
@@ -32,11 +38,10 @@ class ResourceManagement(Protocol[AccessT, ResourceT]):
     """Managed-facing boundary for the complete Resource acquisition lifecycle.
 
     ``open_attempt`` registers an opaque identity before Managed publishes it, so a
-    concurrent ``release`` cannot be lost.  ``release`` only revokes retention
-    authority; interruption and cleanup remain Resource-layer concerns and cleanup
-    never has to complete before ``release`` returns.  Acquired resources remain
-    physically pinned until ``finish_acquire`` even if ``release`` is requested
-    concurrently.
+    concurrent ``release`` cannot be lost. ``release`` revokes retention authority
+    and requests interruption of any current physical acquisition without waiting
+    for that acquisition or cleanup to complete. Acquired Resources remain pinned
+    until ``finish_acquire`` while Capability projection is using them.
     """
 
     def open_attempt(self) -> AttemptId: ...
@@ -57,20 +62,14 @@ class ResourceAcquisitionCancelled(RuntimeError):
 
 
 @dataclass(slots=True)
-class _AcquisitionPart(Generic[SpecT, ResourceT]):
-    spec: SpecT
-    physical: PhysicalAcquisition[ResourceT]
-    resources: ResourceSet[ResourceT] | None = None
-    finished: bool = False
-
-
-@dataclass(slots=True)
 class _AttemptContext(Generic[AccessT, SpecT, ResourceT]):
     attempt_id: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT] | None = None
-    parts: list[_AcquisitionPart[SpecT, ResourceT]] = field(default_factory=list)
-    resources: ResourceSet[ResourceT] | None = None
+    resources: ResourceSet[ResourceT] = ()
+    current_physical: PhysicalAcquisition[ResourceT] | None = None
+    reserved: bool = False
+    cancel_requested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +84,6 @@ class _Cancelled:
 
 @dataclass(slots=True)
 class _Acquiring(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT]
-
-
-@dataclass(slots=True)
-class _Cancelling(Generic[AccessT, SpecT, ResourceT]):
     context: _AttemptContext[AccessT, SpecT, ResourceT]
 
 
@@ -120,7 +114,6 @@ type _AttemptState[A, S, R] = (
     _Pending
     | _Cancelled
     | _Acquiring[A, S, R]
-    | _Cancelling[A, S, R]
     | _Pinned[A, S, R]
     | _Retained[A, S, R]
     | _RetiredPinned[A, S, R]
@@ -129,7 +122,7 @@ type _AttemptState[A, S, R] = (
 
 
 class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
-    """Own the Resource attempt state machine, physical I/O, and cleanup."""
+    """Own Resource reservation, terminal physical outcomes, and cleanup."""
 
     def __init__(
         self,
@@ -192,98 +185,57 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             acquiring = _Acquiring(context)
             self._attempts[attempt_id] = acquiring
 
-        requirements = self._requirements_model.requirements(access)
-
-        with self._lock:
-            current = self._attempts.get(attempt_id)
-            if isinstance(current, _Cancelling) and current.context is context:
-                return ResourceFailed(
-                    ResourceAcquisitionCancelled("attempt was cancelled")
-                )
-            if current is not acquiring:
-                raise RuntimeError("resource attempt registry changed unexpectedly")
-
-            context.requirements = requirements
-            reserved = self._resource_pool.reserve(
-                attempt_id,
-                access,
-                requirements,
-            )
-            if not reserved:
-                self._attempts.pop(attempt_id, None)
-                return ResourceBlocked()
-
         try:
-            prepare_failure = self._prepare_parts(context)
-            if prepare_failure is not None:
-                self._fail_attempt(context, prepare_failure)
-                return ResourceFailed(prepare_failure)
+            requirements = self._requirements_model.requirements(access)
 
-            if self._is_cancelling(context):
-                self._cancel_before_resources(context)
-                return ResourceFailed(
-                    ResourceAcquisitionCancelled("attempt was cancelled")
-                )
-
-            acquire_failure = self._acquire_parts(context)
-            if acquire_failure is not None:
-                self._fail_attempt(context, acquire_failure)
-                return ResourceFailed(acquire_failure)
-
-            resources = self._current_resources(context)
-            context.resources = resources
-
-            retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
             with self._lock:
                 current = self._attempts.get(attempt_id)
-                if isinstance(current, _Cancelling) and current.context is context:
-                    self._resource_pool.release(attempt_id)
-                    retired = self._resource_pool.finish(
-                        attempt_id,
-                        resources,
-                    )
-                    if retired is not None:
-                        self._attempts[attempt_id] = _Retired(context, retired)
-                    else:
-                        self._attempts.pop(attempt_id, None)
-                elif current is acquiring:
-                    retired = self._resource_pool.finish(
-                        attempt_id,
-                        resources,
-                    )
-                    if retired is not None:
-                        self._attempts[attempt_id] = _Retired(context, retired)
-                    else:
-                        self._attempts[attempt_id] = _Pinned(context)
-                        return ResourceAcquired(resources)
-                else:
+                if current is not acquiring:
                     raise RuntimeError("resource attempt registry changed unexpectedly")
+                context.requirements = requirements
+                if context.cancel_requested:
+                    self._attempts.pop(attempt_id, None)
+                    return ResourceFailed(
+                        ResourceAcquisitionCancelled("attempt was cancelled")
+                    )
 
-            if retired is not None:
-                self._schedule_cleanup_retired_attempt(retired)
-            return ResourceFailed(
-                ResourceAcquisitionCancelled("attempt was cancelled")
-            )
+                reserved = self._resource_pool.reserve(
+                    attempt_id,
+                    access,
+                    requirements,
+                )
+                if not reserved:
+                    self._attempts.pop(attempt_id, None)
+                    return ResourceBlocked()
+                context.reserved = True
+
+            failure = self._acquire_requirements(context)
+            if failure is not None:
+                self._fail_attempt(context, failure)
+                return ResourceFailed(failure)
+
+            return self._commit_acquired(context)
 
         except BaseException:
-            # Contract/invariant errors are not normalized into ResourceFailed, but
-            # any partial physical resources still remain ResourceManager-owned.
+            # Operational physical failures are typed PhysicalFailed outcomes. Any
+            # exception escaping acquire() is therefore a contract/invariant failure,
+            # but ResourceManager still retires every Resource it knows it owns.
             self._fail_attempt(context, None)
             raise
 
     def release(self, attempt_id: AttemptId) -> None:
-        """Revoke retention authority without waiting for physical cleanup.
+        """Revoke authority and request interruption without waiting for completion.
 
-        A processing attempt is marked retired and best-effort interrupted.  Its
-        cleanup is scheduled automatically once processing has finished.  A retained
-        attempt is cleanup-eligible immediately, but cleanup still runs detached from
-        this call so Managed never waits for driver cleanup.
+        If a physical ``acquire`` is in progress, ``interrupt`` is requested and this
+        method returns. The acquisition thread itself remains blocked until the driver
+        returns its terminal typed outcome. Cleanup is likewise detached from this
+        call so Managed release never waits for backend shutdown or cleanup latency.
         """
 
         self._validate_attempt_id(attempt_id)
 
         retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
-        physicals: list[PhysicalAcquisition[ResourceT]] = []
+        physical: PhysicalAcquisition[ResourceT] | None = None
 
         with self._lock:
             state = self._attempts.get(attempt_id)
@@ -297,23 +249,10 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
             if isinstance(state, _Acquiring):
                 context = state.context
-                self._attempts[attempt_id] = _Cancelling(context)
-                release = self._resource_pool.release(attempt_id)
-                retired = release.retired
-                physicals = [
-                    part.physical for part in context.parts if not part.finished
-                ]
-                if retired is not None:
-                    self._attempts[attempt_id] = _Retired(context, retired)
-            elif isinstance(state, _Cancelling):
-                context = state.context
-                release = self._resource_pool.release(attempt_id)
-                retired = release.retired
-                physicals = [
-                    part.physical for part in context.parts if not part.finished
-                ]
-                if retired is not None:
-                    self._attempts[attempt_id] = _Retired(context, retired)
+                context.cancel_requested = True
+                physical = context.current_physical
+                if context.reserved:
+                    self._resource_pool.release(attempt_id)
             elif isinstance(state, _Pinned):
                 release = self._resource_pool.release(attempt_id)
                 retired = release.retired
@@ -333,20 +272,20 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             else:
                 raise RuntimeError("unsupported Resource attempt state")
 
-        for physical in physicals:
+        if physical is not None:
             try:
                 physical.interrupt()
             except Exception:
-                # Retiring Managed authority must not depend on whether a backend can
-                # synchronously interrupt an in-flight physical operation.  The
-                # producer may still finish naturally and become cleanup-eligible.
+                # Authority retirement cannot depend on a backend synchronously
+                # accepting interruption. acquire() must still reach a terminal
+                # outcome, possibly by completing naturally.
                 pass
 
         if retired is not None:
             self._schedule_cleanup_retired_attempt(retired)
 
     def finish_acquire(self, attempt_id: AttemptId) -> None:
-        """End the temporary ResourceSet borrow used for capability projection."""
+        """End the temporary ResourceSet borrow used for Capability projection."""
 
         self._validate_attempt_id(attempt_id)
         retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
@@ -363,9 +302,9 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             if isinstance(state, _RetiredPinned):
                 retired = state.retired
                 self._attempts[attempt_id] = _Retired(state.context, retired)
-            elif isinstance(state, _Cancelling) and not self._pool_has_attempt(attempt_id):
-                self._attempts.pop(attempt_id, None)
-                return
+            elif isinstance(state, _Acquiring):
+                if state.context.cancel_requested and not state.context.reserved:
+                    self._attempts.pop(attempt_id, None)
 
         if retired is not None:
             self._schedule_cleanup_retired_attempt(retired)
@@ -374,7 +313,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         """Synchronously retry cleanup of retired entries for operational recovery.
 
         Normal Managed flows never need to call this; retirement schedules cleanup
-        automatically.  This method remains available for retrying a cleanup that a
+        automatically. This method remains available for retrying a cleanup that a
         driver previously failed.
         """
 
@@ -403,7 +342,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                 raise error
         return True
 
-    def _prepare_parts(
+    def _acquire_requirements(
         self,
         context: _AttemptContext[AccessT, SpecT, ResourceT],
     ) -> Exception | None:
@@ -412,114 +351,124 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             raise RuntimeError("resource requirements are not resolved")
 
         for requirement in requirements:
-            if self._is_cancelling(context):
+            if self._is_cancel_requested(context):
                 return ResourceAcquisitionCancelled("attempt was cancelled")
+
             try:
                 physical = self._driver.prepare(requirement.spec)
             except Exception as exc:
                 return exc
             if physical is None:
                 raise TypeError("ResourceDriver.prepare() cannot return None")
+
             with self._lock:
-                context.parts.append(_AcquisitionPart(requirement.spec, physical))
-            if self._is_cancelling(context):
+                state = self._attempts.get(context.attempt_id)
+                if not isinstance(state, _Acquiring) or state.context is not context:
+                    raise RuntimeError("resource attempt registry changed unexpectedly")
+                cancelled = context.cancel_requested
+                if not cancelled:
+                    context.current_physical = physical
+
+            if cancelled:
                 try:
                     physical.interrupt()
                 except Exception:
                     pass
                 return ResourceAcquisitionCancelled("attempt was cancelled")
+
+            try:
+                outcome = physical.acquire()
+            finally:
+                with self._lock:
+                    if context.current_physical is physical:
+                        context.current_physical = None
+
+            resources = self._validate_physical_outcome(outcome)
+            with self._lock:
+                state = self._attempts.get(context.attempt_id)
+                if not isinstance(state, _Acquiring) or state.context is not context:
+                    raise RuntimeError("resource attempt registry changed unexpectedly")
+                context.resources += resources
+                cancelled = context.cancel_requested
+
+            if isinstance(outcome, PhysicalFailed):
+                if not isinstance(outcome.error, Exception):
+                    raise TypeError("PhysicalFailed.error must be an Exception")
+                return outcome.error
+            if isinstance(outcome, PhysicalInterrupted):
+                return ResourceAcquisitionCancelled("physical acquisition was interrupted")
+            if not isinstance(outcome, PhysicalAcquired):
+                raise RuntimeError("unsupported PhysicalAcquireOutcome")
+            if cancelled:
+                return ResourceAcquisitionCancelled("attempt was cancelled")
+
         return None
 
-    def _acquire_parts(
+    def _commit_acquired(
         self,
         context: _AttemptContext[AccessT, SpecT, ResourceT],
-    ) -> Exception | None:
-        if not context.parts:
-            resources: ResourceSet[ResourceT] = ()
-            self._resource_pool.publish(context.attempt_id, resources)
-            return None
+    ) -> ResourceAcquireResult[ResourceT]:
+        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+        with self._lock:
+            state = self._attempts.get(context.attempt_id)
+            if not isinstance(state, _Acquiring) or state.context is not context:
+                raise RuntimeError("resource attempt registry changed unexpectedly")
+            if not context.reserved:
+                raise RuntimeError("resource attempt was not reserved")
 
-        for part in context.parts:
-            if self._is_cancelling(context):
-                return ResourceAcquisitionCancelled("attempt was cancelled")
-            try:
-                snapshots = part.physical.acquire()
-            except Exception as exc:
-                part.finished = True
-                return exc
-            if not isinstance(snapshots, Iterator):
-                part.finished = True
-                raise TypeError("PhysicalAcquisition.acquire() must return an Iterator")
+            if context.cancel_requested:
+                self._resource_pool.release(context.attempt_id)
 
-            yielded = False
-            try:
-                while True:
-                    try:
-                        snapshot = next(snapshots)
-                    except StopIteration:
-                        break
-                    except Exception as exc:
-                        return exc
+            retired = self._resource_pool.finish(
+                context.attempt_id,
+                context.resources,
+            )
+            if retired is None and not context.cancel_requested:
+                self._attempts[context.attempt_id] = _Pinned(context)
+                return ResourceAcquired(context.resources)
 
-                    yielded = True
-                    if snapshot is None:
-                        raise TypeError("PhysicalAcquisition.acquire() cannot yield None")
-                    if not isinstance(snapshot, tuple):
-                        raise TypeError(
-                            "PhysicalAcquisition.acquire() must yield ResourceSet tuples"
-                        )
-                    part.resources = snapshot
-                    self._resource_pool.publish(
-                        context.attempt_id,
-                        self._current_resources(context),
-                    )
-                    if self._is_cancelling(context):
-                        return ResourceAcquisitionCancelled("attempt was cancelled")
-            finally:
-                part.finished = True
+            if retired is None:
+                raise RuntimeError("cancelled resource attempt was not retired")
+            self._attempts[context.attempt_id] = _Retired(context, retired)
 
-            if not yielded:
-                if self._is_cancelling(context):
-                    return ResourceAcquisitionCancelled("attempt was cancelled")
-                raise RuntimeError(
-                    "PhysicalAcquisition.acquire() must yield at least one ResourceSet"
-                )
-        return None
+        self._schedule_cleanup_retired_attempt(retired)
+        return ResourceFailed(ResourceAcquisitionCancelled("attempt was cancelled"))
 
     def _fail_attempt(
         self,
         context: _AttemptContext[AccessT, SpecT, ResourceT],
         primary_error: Exception | None,
     ) -> None:
-        """Retire partial resources and schedule detached cleanup."""
+        """Retire all terminally reported Resources and schedule detached cleanup."""
 
         retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
-        physicals: list[PhysicalAcquisition[ResourceT]] = []
+        physical: PhysicalAcquisition[ResourceT] | None = None
         with self._lock:
             current = self._attempts.get(context.attempt_id)
             if not self._state_uses_context(current, context):
                 return
 
-            self._attempts[context.attempt_id] = _Cancelling(context)
-            release = self._resource_pool.release(context.attempt_id)
-            physicals = [
-                part.physical for part in context.parts if not part.finished
-            ]
-            if release.processing:
-                current_resources = self._current_resources_or_none(context)
-                retired = self._resource_pool.finish(
-                    context.attempt_id,
-                    current_resources,
-                )
-            else:
-                retired = release.retired
+            context.cancel_requested = True
+            physical = context.current_physical
 
-            if retired is not None:
-                self._attempts[context.attempt_id] = _Retired(context, retired)
+            if context.reserved:
+                release = self._resource_pool.release(context.attempt_id)
+                if release.processing:
+                    retired = self._resource_pool.finish(
+                        context.attempt_id,
+                        context.resources,
+                    )
+                else:
+                    retired = release.retired
+
+                if retired is not None:
+                    self._attempts[context.attempt_id] = _Retired(context, retired)
+                else:
+                    self._attempts.pop(context.attempt_id, None)
             else:
                 self._attempts.pop(context.attempt_id, None)
 
-        for physical in physicals:
+        if physical is not None:
             try:
                 physical.interrupt()
             except Exception as exc:
@@ -528,32 +477,6 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
         if retired is not None:
             self._schedule_cleanup_retired_attempt(retired)
-
-    def _cancel_before_resources(
-        self,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
-    ) -> None:
-        physicals: list[PhysicalAcquisition[ResourceT]] = []
-        with self._lock:
-            current = self._attempts.get(context.attempt_id)
-            if not self._state_uses_context(current, context):
-                return
-            physicals = [
-                part.physical for part in context.parts if not part.finished
-            ]
-            try:
-                self._resource_pool.cancel(context.attempt_id)
-            except RuntimeError:
-                release = self._resource_pool.release(context.attempt_id)
-                if release.processing:
-                    self._resource_pool.finish(context.attempt_id, None)
-            self._attempts.pop(context.attempt_id, None)
-
-        for physical in physicals:
-            try:
-                physical.interrupt()
-            except Exception:
-                pass
 
     def _schedule_cleanup_retired_attempt(
         self,
@@ -573,7 +496,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         try:
             worker.start()
         except Exception:
-            # Thread creation failure must not make Managed release fail.  Keep the
+            # Thread creation failure must not make Managed release fail. Keep the
             # retired entry available for a later release/cleanup_retired retry.
             self._reset_cleanup_claim(retired)
 
@@ -630,23 +553,15 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
                 self._attempts.pop(retired.attempt, None)
         return None
 
-    def _is_cancelling(
+    def _is_cancel_requested(
         self,
         context: _AttemptContext[AccessT, SpecT, ResourceT],
     ) -> bool:
         with self._lock:
             current = self._attempts.get(context.attempt_id)
-            return not (
-                isinstance(current, _Acquiring)
-                and current.context is context
-            )
-
-    def _pool_has_attempt(self, attempt_id: AttemptId) -> bool:
-        if self._resource_pool.request_snapshot(attempt_id) is not None:
-            return True
-        return any(
-            record.attempt is attempt_id for record in self._resource_pool.snapshot()
-        )
+            if not isinstance(current, _Acquiring) or current.context is not context:
+                return True
+            return context.cancel_requested
 
     @staticmethod
     def _state_uses_context(
@@ -655,7 +570,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
     ) -> bool:
         return isinstance(
             state,
-            (_Acquiring, _Cancelling, _Pinned, _Retained, _RetiredPinned, _Retired),
+            (_Acquiring, _Pinned, _Retained, _RetiredPinned, _Retired),
         ) and state.context is context
 
     @staticmethod
@@ -664,26 +579,19 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             raise TypeError("attempt_id must be AttemptId")
 
     @staticmethod
-    def _current_resources(
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+    def _validate_physical_outcome(
+        outcome: object,
     ) -> ResourceSet[ResourceT]:
-        return tuple(
-            resource
-            for part in context.parts
-            if part.resources is not None
-            for resource in part.resources
-        )
-
-    @classmethod
-    def _current_resources_or_none(
-        cls,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
-    ) -> ResourceSet[ResourceT] | None:
-        if not context.parts:
-            return ()
-        if not any(part.resources is not None for part in context.parts):
-            return None
-        return cls._current_resources(context)
+        if not isinstance(
+            outcome,
+            (PhysicalAcquired, PhysicalInterrupted, PhysicalFailed),
+        ):
+            raise TypeError(
+                "PhysicalAcquisition.acquire() must return a PhysicalAcquireOutcome"
+            )
+        if not isinstance(outcome.resources, tuple):
+            raise TypeError("physical outcome resources must be a ResourceSet tuple")
+        return outcome.resources
 
 
 __all__ = [

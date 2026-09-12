@@ -1,7 +1,15 @@
 """Physical resource coordination, I/O, and cleanup primitives."""
 
 from _attempt import AttemptId
-from _resource.driver import PhysicalAcquisition, ResourceDriver, ResourceSet
+from _resource.driver import (
+    PhysicalAcquireOutcome,
+    PhysicalAcquired,
+    PhysicalAcquisition,
+    PhysicalFailed,
+    PhysicalInterrupted,
+    ResourceDriver,
+    ResourceSet,
+)
 from _resource.manager import (
     ResourceAcquisitionCancelled,
     ResourceManagement,
@@ -30,7 +38,11 @@ __all__ = [
     "AttemptId",
     "AttemptRelease",
     "GLOBAL_RESOURCE_POOL",
+    "PhysicalAcquireOutcome",
+    "PhysicalAcquired",
     "PhysicalAcquisition",
+    "PhysicalFailed",
+    "PhysicalInterrupted",
     "ResourceAcquisitionCancelled",
     "ResourceAcquireResult",
     "ResourceAcquired",

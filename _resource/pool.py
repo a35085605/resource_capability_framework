@@ -16,15 +16,17 @@ ResourceT = TypeVar("ResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRequestRecord(Generic[AccessT, SpecT, ResourceT]):
-    """Immutable point-in-time view of one attempt still being acquired."""
+class ResourceRequestRecord(Generic[AccessT, SpecT]):
+    """Immutable view of one reserved attempt still being physically acquired.
+
+    Processing attempts intentionally expose no ResourceSet: physical acquisitions
+    publish only one terminal ResourceSet when the complete attempt finishes.
+    """
 
     attempt: AttemptId
     access: AccessT
     requirements: ResourceRequirements[SpecT]
-    resources: ResourceSet[ResourceT] | None
     retired: bool
-    processing: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,15 +69,14 @@ class _Entry(Generic[AccessT, SpecT, ResourceT]):
 
 
 class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
-    """Process-wide registry keyed by the caller-supplied acquisition attempt.
+    """Process-wide registry keyed by one Resource acquisition attempt.
 
-    Conflict checking and reservation are one atomic operation.  One entry tracks
-    each attempt across processing, retained, and retired phases; ``processing``
-    describes whether physical production may still change its ResourceSet, while
-    ``retired`` records that retention authority has been revoked.  Access is kept
-    only to associate the entry with its creator; conflicts are determined
-    exclusively by Resource requirements.  ``AttemptId`` is the sole identity for
-    the complete lifecycle.
+    Conflict checking and reservation are atomic.  While an attempt is processing,
+    the Pool tracks only its reservation and retirement flag; physical acquisitions
+    do not publish intermediate Resources. ``finish`` atomically publishes the one
+    final ResourceSet and ends processing. ``retired`` records that retention
+    authority has been revoked. Access is kept only to associate an entry with its
+    creator; conflicts are determined exclusively by Resource requirements.
     """
 
     def __init__(self) -> None:
@@ -125,7 +126,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def request_snapshot(
         self,
         attempt: AttemptId,
-    ) -> ResourceRequestRecord[AccessT, SpecT, ResourceT] | None:
+    ) -> ResourceRequestRecord[AccessT, SpecT] | None:
         self._validate_attempt(attempt)
         with self._lock:
             state = self._entries.get(attempt)
@@ -133,9 +134,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 return None
             return self._request_record_locked(state)
 
-    def requests(
-        self,
-    ) -> tuple[ResourceRequestRecord[AccessT, SpecT, ResourceT], ...]:
+    def requests(self) -> tuple[ResourceRequestRecord[AccessT, SpecT], ...]:
         with self._lock:
             return tuple(
                 self._request_record_locked(state)
@@ -166,7 +165,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         self,
         attempt: AttemptId,
     ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
-        """Return the exact retired resource identified by ``attempt``."""
+        """Return the exact retired Resource identified by ``attempt``."""
 
         self._validate_attempt(attempt)
         with self._lock:
@@ -207,23 +206,11 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             )
             return True
 
-    def publish(
-        self,
-        attempt: AttemptId,
-        resources: ResourceSet[ResourceT],
-    ) -> None:
-        self._validate_resources(resources)
-        with self._lock:
-            state = self._require_entry_locked(attempt)
-            if not state.processing:
-                raise RuntimeError("resource attempt is no longer processing")
-            state.resources = resources
-
     def release(
         self,
         attempt: AttemptId,
     ) -> AttemptRelease[AccessT, SpecT, ResourceT]:
-        """Idempotently request stop/release for any current phase of ``attempt``."""
+        """Idempotently revoke retention authority for ``attempt``."""
 
         self._validate_attempt(attempt)
         with self._lock:
@@ -235,45 +222,35 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             if state.processing:
                 return AttemptRelease(processing=True)
             if state.resources is None:
-                del self._entries[attempt]
-                return AttemptRelease(processing=False)
+                raise RuntimeError("finished resource attempt has no ResourceSet")
             return AttemptRelease(processing=False, retired=self._retired_view(state))
 
     def finish(
         self,
         attempt: AttemptId,
-        resources: ResourceSet[ResourceT] | None = None,
+        resources: ResourceSet[ResourceT],
     ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
-        """Publish the final snapshot and end physical processing for ``attempt``."""
+        """Publish the final ResourceSet and end physical processing for ``attempt``."""
 
-        if resources is not None:
-            self._validate_resources(resources)
+        self._validate_resources(resources)
         with self._lock:
             state = self._require_entry_locked(attempt)
             if not state.processing:
                 raise RuntimeError("resource attempt is already finished")
-            if resources is not None:
-                state.resources = resources
-            if state.resources is None:
-                if state.retired:
-                    del self._entries[attempt]
-                    return None
-                raise RuntimeError("resource attempt has no final resources")
+            state.resources = resources
             state.processing = False
             if not state.retired:
                 return None
             return self._retired_view(state)
 
     def cancel(self, attempt: AttemptId) -> bool:
-        """Cancel a reservation that has not published any Resource yet."""
+        """Cancel a reservation before any physical acquisition has started."""
 
         self._validate_attempt(attempt)
         with self._lock:
             state = self._entries.get(attempt)
             if state is None or not state.processing:
                 return False
-            if state.resources is not None:
-                raise RuntimeError("cannot cancel an attempt that already has resources")
             del self._entries[attempt]
             return True
 
@@ -316,14 +293,12 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     @staticmethod
     def _request_record_locked(
         state: _Entry[AccessT, SpecT, ResourceT],
-    ) -> ResourceRequestRecord[AccessT, SpecT, ResourceT]:
+    ) -> ResourceRequestRecord[AccessT, SpecT]:
         return ResourceRequestRecord(
             state.attempt,
             state.access,
             state.requirements,
-            state.resources,
             state.retired,
-            state.processing,
         )
 
     @staticmethod
