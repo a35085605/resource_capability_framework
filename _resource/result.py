@@ -16,19 +16,11 @@ class ResourceBlocked:
     reason: str = "resource key conflict"
 
 
-@dataclass(frozen=True, slots=True)
-class ResourceFailed:
-    error: Exception
-
-
-ResourceAcquireResult: TypeAlias = (
-    ResourceReady[ValueT] | ResourceBlocked | ResourceFailed
-)
+ResourceAcquireResult: TypeAlias = ResourceReady[ValueT] | ResourceBlocked
 
 
 __all__ = [
     "ResourceAcquireResult",
     "ResourceBlocked",
-    "ResourceFailed",
     "ResourceReady",
 ]

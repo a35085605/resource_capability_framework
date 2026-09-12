@@ -14,14 +14,9 @@ from _resource.driver import (
 )
 from _resource.key import ResourceKey, ResourceKeyModel
 from _resource.policy import ResourcePolicy
-from _resource.pool import GLOBAL_RESOURCE_POOL, ResourceReservationTable
+from _resource.pool import GLOBAL_RESOURCE_RESERVATION_TABLE, ResourceReservationTable
 from _resource.requirement import ResourceRequirement, ResourceRequirements
-from _resource.result import (
-    ResourceAcquireResult,
-    ResourceBlocked,
-    ResourceFailed,
-    ResourceReady,
-)
+from _resource.result import ResourceAcquireResult, ResourceBlocked, ResourceReady
 
 
 RequestT = TypeVar("RequestT")
@@ -59,6 +54,7 @@ class ResourceAttempt(Protocol[RequestT, PhysicalResourceT]):
     """Serial managed-facing handle for one Resource acquisition lifecycle.
 
     ``acquire`` performs physical acquisition and capability projection synchronously.
+    It returns only ready/blocked results; acquisition and projection failures are raised.
     ``release`` performs cleanup synchronously and returns only after cleanup succeeds.
     If cleanup fails, the attempt retains its reservation and resources for an explicit
     retry through ``release``.
@@ -153,14 +149,7 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
             # ownership until synchronous cleanup succeeds.
             self._phase = _AttemptPhase.CLEANUP_PENDING
 
-            failure = self._acquire_requirements(claims)
-            if failure is not None:
-                cleanup_error = self._cleanup_reserved()
-                if cleanup_error is not None:
-                    return ResourceFailed(
-                        ResourceCleanupPendingError(failure, cleanup_error)
-                    )
-                return ResourceFailed(failure)
+            self._acquire_requirements(claims)
 
             value = use_resources(self._resources)
             self._phase = _AttemptPhase.ACTIVE
@@ -215,7 +204,7 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
     def _acquire_requirements(
         self,
         claims: ResourceClaims[RequirementT],
-    ) -> Exception | None:
+    ) -> None:
         for claim in claims:
             outcome = self._driver.acquire(claim.requirement)
             resources = self._validate_physical_outcome(outcome)
@@ -224,11 +213,9 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
             if isinstance(outcome, PhysicalFailed):
                 if not isinstance(outcome.error, Exception):
                     raise TypeError("PhysicalFailed.error must be an Exception")
-                return outcome.error
+                raise outcome.error
             if not isinstance(outcome, PhysicalAcquired):
                 raise RuntimeError("unsupported PhysicalAcquireOutcome")
-
-        return None
 
     def _cleanup_reserved(self) -> Exception | None:
         """Attempt synchronous cleanup while preserving ownership on failure."""
@@ -279,18 +266,18 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
         key_model: ResourceKeyModel[RequirementT],
         driver: ResourceDriver[RequirementT, PhysicalResourceT],
         *,
-        resource_pool: ResourceReservationTable[
+        reservation_table: ResourceReservationTable[
             RequestT, RequirementT
-        ] = GLOBAL_RESOURCE_POOL,
+        ] = GLOBAL_RESOURCE_RESERVATION_TABLE,
     ) -> None:
         self._requirements_model = requirements_model
         if not callable(getattr(key_model, "key_for", None)):
             raise TypeError("key_model must provide key_for(requirement)")
         self._key_model = key_model
         self._driver = driver
-        if not isinstance(resource_pool, ResourceReservationTable):
-            raise TypeError("resource_pool must be ResourceReservationTable")
-        self._reservation_table = resource_pool
+        if not isinstance(reservation_table, ResourceReservationTable):
+            raise TypeError("reservation_table must be ResourceReservationTable")
+        self._reservation_table = reservation_table
 
     @property
     def requirements_model(self) -> ResourceRequirementsModel[RequestT, RequirementT]:
@@ -308,12 +295,6 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
     def reservation_table(
         self,
     ) -> ResourceReservationTable[RequestT, RequirementT]:
-        return self._reservation_table
-
-    @property
-    def resource_pool(self) -> ResourceReservationTable[RequestT, RequirementT]:
-        """Compatibility alias for ``reservation_table``."""
-
         return self._reservation_table
 
     def open_attempt(self) -> ResourceAttempt[RequestT, PhysicalResourceT]:

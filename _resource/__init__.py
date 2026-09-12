@@ -9,7 +9,7 @@ from _resource.driver import (
     ResourceDriver,
     PhysicalResourceSet,
 )
-from _resource.key import ResourceKey, ResourceKeyModel, ResourceKeys
+from _resource.key import ResourceKey, ResourceKeyModel
 from _resource.manager import (
     ResourceCleanupPendingError,
     ResourceAttempt,
@@ -19,26 +19,18 @@ from _resource.manager import (
 )
 from _resource.policy import ResourcePolicy
 from _resource.pool import (
-    GLOBAL_RESOURCE_POOL,
     GLOBAL_RESOURCE_RESERVATION_TABLE,
-    ResourcePool,
     ResourceReservationRecord,
     ResourceReservationTable,
 )
 from _resource.requirement import ResourceRequirement, ResourceRequirements
-from _resource.result import (
-    ResourceAcquireResult,
-    ResourceBlocked,
-    ResourceFailed,
-    ResourceReady,
-)
+from _resource.result import ResourceAcquireResult, ResourceBlocked, ResourceReady
 
 
 __all__ = [
     "AttemptId",
     "ResourceClaim",
     "ResourceClaims",
-    "GLOBAL_RESOURCE_POOL",
     "GLOBAL_RESOURCE_RESERVATION_TABLE",
     "PhysicalAcquireOutcome",
     "PhysicalAcquired",
@@ -48,14 +40,11 @@ __all__ = [
     "ResourceAttempt",
     "ResourceKey",
     "ResourceKeyModel",
-    "ResourceKeys",
     "ResourceAcquireResult",
     "ResourceBlocked",
     "ResourceDriver",
-    "ResourceFailed",
     "ResourceManagement",
     "ResourceManager",
-    "ResourcePool",
     "ResourceReservationRecord",
     "ResourceReservationTable",
     "ResourceRequirement",

@@ -46,7 +46,4 @@ class ResourceKeyModel(Protocol[RequirementT]):
     def key_for(self, requirement: RequirementT) -> ResourceKey: ...
 
 
-type ResourceKeys = tuple[ResourceKey, ...]
-
-
-__all__ = ["ResourceKey", "ResourceKeyModel", "ResourceKeys"]
+__all__ = ["ResourceKey", "ResourceKeyModel"]

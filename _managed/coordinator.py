@@ -31,7 +31,7 @@ from _resource.manager import (
     ResourceCleanupPendingError,
     ResourceManagement,
 )
-from _resource.result import ResourceBlocked, ResourceFailed, ResourceReady
+from _resource.result import ResourceBlocked, ResourceReady
 
 
 GenerationT = TypeVar("GenerationT")
@@ -126,12 +126,6 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
                 with self._lock:
                     self._state = Idle(generation)
                 return AcquireBusy()
-
-            if isinstance(result, ResourceFailed):
-                self._finish_failed_acquire(generation, request, attempt, result.error)
-                if isinstance(result.error, ResourceCleanupPendingError):
-                    raise result.error from result.error.primary_error
-                raise result.error
 
             try:
                 if not isinstance(result, ResourceReady):
