@@ -7,7 +7,7 @@ from _attempt import AttemptId
 
 
 GenerationT = TypeVar("GenerationT")
-AccessT = TypeVar("AccessT")
+RequestT = TypeVar("RequestT")
 CapabilityT = TypeVar("CapabilityT")
 
 
@@ -17,24 +17,24 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
-class Preparing(Generic[GenerationT, AccessT]):
+class Preparing(Generic[GenerationT, RequestT]):
     generation: GenerationT
-    access: AccessT
+    request: RequestT
     attempt_id: AttemptId
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, AccessT, CapabilityT]):
+class Current(Generic[GenerationT, RequestT, CapabilityT]):
     generation: GenerationT
-    access: AccessT
+    request: RequestT
     capability: CapabilityT
     attempt_id: AttemptId
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
-    | Preparing[GenerationT, AccessT]
-    | Current[GenerationT, AccessT, CapabilityT]
+    | Preparing[GenerationT, RequestT]
+    | Current[GenerationT, RequestT, CapabilityT]
 )
 
 

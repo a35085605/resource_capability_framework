@@ -7,7 +7,7 @@ from _managed.snapshot import Snapshot
 
 
 GenerationT = TypeVar("GenerationT")
-AccessT = TypeVar("AccessT")
+RequestT = TypeVar("RequestT")
 CapabilityT = TypeVar("CapabilityT")
 
 
@@ -18,22 +18,22 @@ class GenerationMismatch(Generic[GenerationT]):
 
 @dataclass(frozen=True, slots=True)
 class AcquireBusy:
-    """The coordinator or Access-keyed pool is already preparing/retaining resources."""
+    """The coordinator or Resource pool is already preparing/retaining resources."""
 
 
 @dataclass(frozen=True, slots=True)
-class AcquireExisting(Generic[GenerationT, AccessT, CapabilityT]):
-    snapshot: Snapshot[GenerationT, AccessT, CapabilityT]
+class AcquireExisting(Generic[GenerationT, RequestT, CapabilityT]):
+    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
-class AcquireAccessMismatch(Generic[AccessT]):
-    current_access: AccessT
+class AcquireRequestMismatch(Generic[RequestT]):
+    current_request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
-class AcquireCommitted(Generic[GenerationT, AccessT, CapabilityT]):
-    snapshot: Snapshot[GenerationT, AccessT, CapabilityT]
+class AcquireCommitted(Generic[GenerationT, RequestT, CapabilityT]):
+    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,21 +44,21 @@ class AcquireSuperseded(Generic[GenerationT]):
 AcquireResult: TypeAlias = (
     GenerationMismatch[GenerationT]
     | AcquireBusy
-    | AcquireExisting[GenerationT, AccessT, CapabilityT]
-    | AcquireAccessMismatch[AccessT]
-    | AcquireCommitted[GenerationT, AccessT, CapabilityT]
+    | AcquireExisting[GenerationT, RequestT, CapabilityT]
+    | AcquireRequestMismatch[RequestT]
+    | AcquireCommitted[GenerationT, RequestT, CapabilityT]
     | AcquireSuperseded[GenerationT]
 )
 
 
 @dataclass(frozen=True, slots=True)
-class ReleaseAccessMismatch(Generic[AccessT]):
-    current_access: AccessT
+class ReleaseRequestMismatch(Generic[RequestT]):
+    current_request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseInactive:
-    """Current generation has no Access authority to detach."""
+    """Current generation has no active Request to detach."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +75,7 @@ class ReleaseDetached(Generic[GenerationT]):
 
 ReleaseResult: TypeAlias = (
     GenerationMismatch[GenerationT]
-    | ReleaseAccessMismatch[AccessT]
+    | ReleaseRequestMismatch[RequestT]
     | ReleaseInactive
     | ReleaseAcquisitionRevoked[GenerationT]
     | ReleaseDetached[GenerationT]
@@ -83,14 +83,14 @@ ReleaseResult: TypeAlias = (
 
 
 __all__ = [
-    "AcquireAccessMismatch",
+    "AcquireRequestMismatch",
     "AcquireBusy",
     "AcquireCommitted",
     "AcquireExisting",
     "AcquireResult",
     "AcquireSuperseded",
     "GenerationMismatch",
-    "ReleaseAccessMismatch",
+    "ReleaseRequestMismatch",
     "ReleaseAcquisitionRevoked",
     "ReleaseDetached",
     "ReleaseInactive",

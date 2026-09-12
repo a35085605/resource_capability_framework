@@ -7,14 +7,14 @@ from typing import Generic, TypeVar
 from _attempt import AttemptId
 from _capability.projection import CapabilityProjection
 from _managed.result import (
-    AcquireAccessMismatch,
+    AcquireRequestMismatch,
     AcquireBusy,
     AcquireCommitted,
     AcquireExisting,
     AcquireResult,
     AcquireSuperseded,
     GenerationMismatch,
-    ReleaseAccessMismatch,
+    ReleaseRequestMismatch,
     ReleaseAcquisitionRevoked,
     ReleaseDetached,
     ReleaseInactive,
@@ -27,15 +27,15 @@ from _resource.result import ResourceAcquired, ResourceBlocked, ResourceFailed
 
 
 GenerationT = TypeVar("GenerationT")
-AccessT = TypeVar("AccessT")
+RequestT = TypeVar("RequestT")
 ResourceT = TypeVar("ResourceT")
 CapabilityT = TypeVar("CapabilityT")
 
 
-class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
-    """Coordinate Managed authority while ResourceManagement owns Resources.
+class ManagedCoordinator(Generic[GenerationT, RequestT, ResourceT, CapabilityT]):
+    """Coordinate Managed Request state while ResourceManagement owns Resources.
 
-    Managed state contains only generation, Access value, opaque attempt identity,
+    Managed state contains only generation, Request value, opaque attempt identity,
     and published Capability.  Resource attempt lifecycle, reservation, physical
     I/O, interruption, retention, retirement, and cleanup stay below the
     ResourceManagement boundary.
@@ -44,9 +44,9 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
     def __init__(
         self,
         issue_generation: Callable[[], GenerationT],
-        resource_manager: ResourceManagement[AccessT, ResourceT],
+        resource_manager: ResourceManagement[RequestT, ResourceT],
         capability_projection: CapabilityProjection[
-            AccessT, ResourceT, CapabilityT
+            RequestT, ResourceT, CapabilityT
         ],
     ) -> None:
         if not callable(issue_generation):
@@ -55,23 +55,23 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
         self._resource_manager = resource_manager
         self._capability_projection = capability_projection
         self._lock = Lock()
-        self._state: ManagedState[GenerationT, AccessT, CapabilityT] = (
+        self._state: ManagedState[GenerationT, RequestT, CapabilityT] = (
             Idle(issue_generation())
         )
 
-    def read(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
+    def read(self) -> Snapshot[GenerationT, RequestT, CapabilityT]:
         with self._lock:
             return self._snapshot_locked()
 
     def acquire(
         self,
         expected: GenerationT,
-        access: AccessT,
-    ) -> AcquireResult[GenerationT, AccessT, CapabilityT]:
+        request: RequestT,
+    ) -> AcquireResult[GenerationT, RequestT, CapabilityT]:
         if expected is None:
             raise TypeError("expected cannot be None")
-        if access is None:
-            raise TypeError("access cannot be None")
+        if request is None:
+            raise TypeError("request cannot be None")
 
         with self._lock:
             if expected != self._state.generation:
@@ -84,9 +84,9 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 return GenerationMismatch(state.generation)
             if isinstance(state, Current):
                 snapshot = self._snapshot_locked()
-                if state.access == access:
+                if state.request == request:
                     return AcquireExisting(snapshot)
-                return AcquireAccessMismatch(state.access)
+                return AcquireRequestMismatch(state.request)
             if isinstance(state, Preparing):
                 return AcquireBusy()
             if not isinstance(state, Idle):
@@ -95,12 +95,12 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
             attempt_id = manager.open_attempt()
             self._state = Preparing(
                 state.generation,
-                access,
+                request,
                 attempt_id,
             )
 
         try:
-            result = manager.acquire(attempt_id, access)
+            result = manager.acquire(attempt_id, request)
 
             if isinstance(result, ResourceBlocked):
                 abandoned, current_generation = self._abandon_if_current(attempt_id)
@@ -120,7 +120,7 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 raise RuntimeError("unsupported ResourceManagement acquire result")
 
             capability = self._capability_projection.project(
-                access,
+                request,
                 result.resources,
             )
             if capability is None:
@@ -133,10 +133,10 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                     and state.attempt_id is attempt_id
                 )
                 if owns_authority:
-                    snapshot = Snapshot(state.generation, access, capability)
+                    snapshot = Snapshot(state.generation, request, capability)
                     self._state = Current(
                         state.generation,
-                        access,
+                        request,
                         capability,
                         attempt_id,
                     )
@@ -160,12 +160,12 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
     def release(
         self,
         expected: GenerationT,
-        access: AccessT,
-    ) -> ReleaseResult[GenerationT, AccessT]:
+        request: RequestT,
+    ) -> ReleaseResult[GenerationT, RequestT]:
         if expected is None:
             raise TypeError("expected cannot be None")
-        if access is None:
-            raise TypeError("access cannot be None")
+        if request is None:
+            raise TypeError("request cannot be None")
 
         with self._lock:
             state = self._state
@@ -186,16 +186,16 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
                 return ReleaseInactive()
 
             if isinstance(state, Preparing):
-                if state.access != access:
-                    return ReleaseAccessMismatch(state.access)
+                if state.request != request:
+                    return ReleaseRequestMismatch(state.request)
                 next_generation = self._fresh_generation(state.generation)
                 attempt_id = state.attempt_id
                 preparing = True
             else:
                 if not isinstance(state, Current):
                     raise RuntimeError("unsupported Managed state")
-                if state.access != access:
-                    return ReleaseAccessMismatch(state.access)
+                if state.request != request:
+                    return ReleaseRequestMismatch(state.request)
                 next_generation = self._fresh_generation(state.generation)
                 attempt_id = state.attempt_id
 
@@ -210,10 +210,10 @@ class ManagedCoordinator(Generic[GenerationT, AccessT, ResourceT, CapabilityT]):
             return ReleaseAcquisitionRevoked(next_generation)
         return ReleaseDetached(next_generation)
 
-    def _snapshot_locked(self) -> Snapshot[GenerationT, AccessT, CapabilityT]:
+    def _snapshot_locked(self) -> Snapshot[GenerationT, RequestT, CapabilityT]:
         state = self._state
         if isinstance(state, Current):
-            return Snapshot(state.generation, state.access, state.capability)
+            return Snapshot(state.generation, state.request, state.capability)
         return Snapshot(state.generation)
 
     def _fresh_generation(self, previous: GenerationT) -> GenerationT:

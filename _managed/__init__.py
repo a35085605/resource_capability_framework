@@ -1,16 +1,16 @@
-"""Managed Access authority and capability coordination primitives."""
+"""Managed Request and capability coordination primitives."""
 
 from _attempt import AttemptId
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
-    AcquireAccessMismatch,
+    AcquireRequestMismatch,
     AcquireBusy,
     AcquireCommitted,
     AcquireExisting,
     AcquireResult,
     AcquireSuperseded,
     GenerationMismatch,
-    ReleaseAccessMismatch,
+    ReleaseRequestMismatch,
     ReleaseAcquisitionRevoked,
     ReleaseDetached,
     ReleaseInactive,
@@ -21,7 +21,7 @@ from _managed.state import Current, Idle, ManagedState, Preparing
 
 
 __all__ = [
-    "AcquireAccessMismatch",
+    "AcquireRequestMismatch",
     "AcquireBusy",
     "AcquireCommitted",
     "AcquireExisting",
@@ -34,7 +34,7 @@ __all__ = [
     "ManagedCoordinator",
     "ManagedState",
     "Preparing",
-    "ReleaseAccessMismatch",
+    "ReleaseRequestMismatch",
     "ReleaseAcquisitionRevoked",
     "ReleaseDetached",
     "ReleaseInactive",

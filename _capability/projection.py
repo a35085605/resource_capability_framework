@@ -5,17 +5,17 @@ from typing import Protocol, TypeVar
 from _resource.driver import ResourceSet
 
 
-AccessT = TypeVar("AccessT", contravariant=True)
+RequestT = TypeVar("RequestT", contravariant=True)
 ResourceT = TypeVar("ResourceT", contravariant=True)
 CapabilityT = TypeVar("CapabilityT", covariant=True)
 
 
-class CapabilityProjection(Protocol[AccessT, ResourceT, CapabilityT]):
-    """Pure, stateless projection from Access + ResourceSet to Capability."""
+class CapabilityProjection(Protocol[RequestT, ResourceT, CapabilityT]):
+    """Pure, stateless projection from Request + ResourceSet to Capability."""
 
     def project(
         self,
-        access: AccessT,
+        request: RequestT,
         resources: ResourceSet[ResourceT],
     ) -> CapabilityT: ...
 

@@ -71,7 +71,7 @@ class PhysicalAcquisition(Protocol[ResourceT]):
 class ResourceDriver(Protocol[SpecT, ResourceT]):
     """Physical resource I/O driven only by a lower-layer resource specification.
 
-    Drivers do not know about managed Access, generations, authority, conflict
+    Drivers do not know about managed Request, generations, authority, conflict
     policy, pool request identity, leases, or capability projection. ``prepare``
     creates a dedicated physical-operation handle without starting Resource
     production; calling its ``acquire`` method performs the I/O and returns one final

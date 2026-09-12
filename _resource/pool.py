@@ -10,13 +10,13 @@ from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 
 
-AccessT = TypeVar("AccessT")
+RequestT = TypeVar("RequestT")
 SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRequestRecord(Generic[AccessT, SpecT]):
+class ResourceRequestRecord(Generic[RequestT, SpecT]):
     """Immutable view of one reserved attempt still being physically acquired.
 
     Processing attempts intentionally expose no ResourceSet: physical acquisitions
@@ -24,64 +24,64 @@ class ResourceRequestRecord(Generic[AccessT, SpecT]):
     """
 
     attempt: AttemptId
-    access: AccessT
+    request: RequestT
     requirements: ResourceRequirements[SpecT]
     retired: bool
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRecord(Generic[AccessT, SpecT, ResourceT]):
+class ResourceRecord(Generic[RequestT, SpecT, ResourceT]):
     """Immutable point-in-time view of one retained or retired attempt."""
 
     attempt: AttemptId
-    access: AccessT
+    request: RequestT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
     retired: bool = False
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class RetiredResource(Generic[AccessT, SpecT, ResourceT]):
+class RetiredResource(Generic[RequestT, SpecT, ResourceT]):
     """Exact retired attempt retained until physical cleanup succeeds."""
 
     attempt: AttemptId
-    access: AccessT
+    request: RequestT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class AttemptRelease(Generic[AccessT, SpecT, ResourceT]):
+class AttemptRelease(Generic[RequestT, SpecT, ResourceT]):
     """Result of asking one attempt to stop or release its retained resources."""
 
     processing: bool
-    retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+    retired: RetiredResource[RequestT, SpecT, ResourceT] | None = None
 
 
 @dataclass(slots=True)
-class _Entry(Generic[AccessT, SpecT, ResourceT]):
+class _Entry(Generic[RequestT, SpecT, ResourceT]):
     attempt: AttemptId
-    access: AccessT
+    request: RequestT
     requirements: ResourceRequirements[SpecT]
     resources: ResourceSet[ResourceT] | None = None
     processing: bool = True
     retired: bool = False
 
 
-class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
+class ResourcePool(Generic[RequestT, SpecT, ResourceT]):
     """Process-wide registry keyed by one Resource acquisition attempt.
 
     Conflict checking and reservation are atomic.  While an attempt is processing,
     the Pool tracks only its reservation and retirement flag; physical acquisitions
     do not publish intermediate Resources. ``finish`` atomically publishes the one
     final ResourceSet and ends processing. ``retired`` records that retention
-    authority has been revoked. Access is kept only to associate an entry with its
+    authority has been revoked. Request is kept only to associate an entry with its
     creator; conflicts are determined exclusively by Resource requirements.
     """
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._entries: dict[AttemptId, _Entry[AccessT, SpecT, ResourceT]] = {}
+        self._entries: dict[AttemptId, _Entry[RequestT, SpecT, ResourceT]] = {}
 
     @staticmethod
     def _validate_attempt(attempt: AttemptId) -> None:
@@ -89,9 +89,9 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             raise TypeError("attempt must be AttemptId")
 
     @staticmethod
-    def _validate_access(access: AccessT) -> None:
-        if access is None:
-            raise TypeError("access cannot be None")
+    def _validate_request(request: RequestT) -> None:
+        if request is None:
+            raise TypeError("request cannot be None")
 
     @staticmethod
     def _validate_requirements(
@@ -109,12 +109,12 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
             seen_specs.append(requirement.spec)
         return requirements
 
-    def snapshot(self) -> tuple[ResourceRecord[AccessT, SpecT, ResourceT], ...]:
+    def snapshot(self) -> tuple[ResourceRecord[RequestT, SpecT, ResourceT], ...]:
         with self._lock:
             return tuple(
                 ResourceRecord(
                     state.attempt,
-                    state.access,
+                    state.request,
                     state.requirements,
                     state.resources,
                     state.retired,
@@ -126,7 +126,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def request_snapshot(
         self,
         attempt: AttemptId,
-    ) -> ResourceRequestRecord[AccessT, SpecT] | None:
+    ) -> ResourceRequestRecord[RequestT, SpecT] | None:
         self._validate_attempt(attempt)
         with self._lock:
             state = self._entries.get(attempt)
@@ -134,7 +134,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 return None
             return self._request_record_locked(state)
 
-    def requests(self) -> tuple[ResourceRequestRecord[AccessT, SpecT], ...]:
+    def requests(self) -> tuple[ResourceRequestRecord[RequestT, SpecT], ...]:
         with self._lock:
             return tuple(
                 self._request_record_locked(state)
@@ -144,10 +144,10 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     def lookup(
         self,
-        access: AccessT,
+        request: RequestT,
         spec: SpecT,
     ) -> tuple[ResourceSet[ResourceT], ...]:
-        self._validate_access(access)
+        self._validate_request(request)
         if spec is None:
             raise TypeError("spec cannot be None")
         with self._lock:
@@ -156,7 +156,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
                 for state in self._entries.values()
                 if not state.processing
                 and state.resources is not None
-                and state.access == access
+                and state.request == request
                 and not state.retired
                 and self._contains_spec(state.requirements, spec)
             )
@@ -164,7 +164,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def retired(
         self,
         attempt: AttemptId,
-    ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
+    ) -> RetiredResource[RequestT, SpecT, ResourceT] | None:
         """Return the exact retired Resource identified by ``attempt``."""
 
         self._validate_attempt(attempt)
@@ -182,13 +182,13 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def reserve(
         self,
         attempt: AttemptId,
-        access: AccessT,
+        request: RequestT,
         requirements: ResourceRequirements[SpecT],
     ) -> bool:
         """Atomically conflict-check requirements and reserve them for ``attempt``."""
 
         self._validate_attempt(attempt)
-        self._validate_access(access)
+        self._validate_request(request)
         normalized = self._validate_requirements(requirements)
 
         with self._lock:
@@ -201,7 +201,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
             self._entries[attempt] = _Entry(
                 attempt=attempt,
-                access=access,
+                request=request,
                 requirements=normalized,
             )
             return True
@@ -209,7 +209,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def release(
         self,
         attempt: AttemptId,
-    ) -> AttemptRelease[AccessT, SpecT, ResourceT]:
+    ) -> AttemptRelease[RequestT, SpecT, ResourceT]:
         """Idempotently revoke retention authority for ``attempt``."""
 
         self._validate_attempt(attempt)
@@ -229,7 +229,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
         self,
         attempt: AttemptId,
         resources: ResourceSet[ResourceT],
-    ) -> RetiredResource[AccessT, SpecT, ResourceT] | None:
+    ) -> RetiredResource[RequestT, SpecT, ResourceT] | None:
         """Publish the final ResourceSet and end physical processing for ``attempt``."""
 
         self._validate_resources(resources)
@@ -256,7 +256,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     def discard(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> None:
         if not isinstance(retired, RetiredResource):
             raise TypeError("retired must be RetiredResource")
@@ -283,7 +283,7 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
     def _require_entry_locked(
         self,
         attempt: AttemptId,
-    ) -> _Entry[AccessT, SpecT, ResourceT]:
+    ) -> _Entry[RequestT, SpecT, ResourceT]:
         self._validate_attempt(attempt)
         state = self._entries.get(attempt)
         if state is None:
@@ -292,24 +292,24 @@ class ResourcePool(Generic[AccessT, SpecT, ResourceT]):
 
     @staticmethod
     def _request_record_locked(
-        state: _Entry[AccessT, SpecT, ResourceT],
-    ) -> ResourceRequestRecord[AccessT, SpecT]:
+        state: _Entry[RequestT, SpecT, ResourceT],
+    ) -> ResourceRequestRecord[RequestT, SpecT]:
         return ResourceRequestRecord(
             state.attempt,
-            state.access,
+            state.request,
             state.requirements,
             state.retired,
         )
 
     @staticmethod
     def _retired_view(
-        state: _Entry[AccessT, SpecT, ResourceT],
-    ) -> RetiredResource[AccessT, SpecT, ResourceT]:
+        state: _Entry[RequestT, SpecT, ResourceT],
+    ) -> RetiredResource[RequestT, SpecT, ResourceT]:
         if state.resources is None:
             raise RuntimeError("retired resource has no ResourceSet")
         return RetiredResource(
             state.attempt,
-            state.access,
+            state.request,
             state.requirements,
             state.resources,
         )

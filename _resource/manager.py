@@ -23,18 +23,18 @@ from _resource.result import (
 )
 
 
-AccessT = TypeVar("AccessT")
+RequestT = TypeVar("RequestT")
 SpecT = TypeVar("SpecT")
 ResourceT = TypeVar("ResourceT")
 
 
-class ResourceRequirementsModel(Protocol[AccessT, SpecT]):
-    """Resolve only the physical Resource requirements for one Access."""
+class ResourceRequirementsModel(Protocol[RequestT, SpecT]):
+    """Resolve only the physical Resource requirements for one Request."""
 
-    def requirements(self, access: AccessT) -> ResourceRequirements[SpecT]: ...
+    def requirements(self, request: RequestT) -> ResourceRequirements[SpecT]: ...
 
 
-class ResourceManagement(Protocol[AccessT, ResourceT]):
+class ResourceManagement(Protocol[RequestT, ResourceT]):
     """Managed-facing boundary for the complete Resource acquisition lifecycle.
 
     ``open_attempt`` registers an opaque identity before Managed publishes it, so a
@@ -49,7 +49,7 @@ class ResourceManagement(Protocol[AccessT, ResourceT]):
     def acquire(
         self,
         attempt_id: AttemptId,
-        access: AccessT,
+        request: RequestT,
     ) -> ResourceAcquireResult[ResourceT]: ...
 
     def release(self, attempt_id: AttemptId) -> None: ...
@@ -62,9 +62,9 @@ class ResourceAcquisitionCancelled(RuntimeError):
 
 
 @dataclass(slots=True)
-class _AttemptContext(Generic[AccessT, SpecT, ResourceT]):
+class _AttemptContext(Generic[RequestT, SpecT, ResourceT]):
     attempt_id: AttemptId
-    access: AccessT
+    request: RequestT
     requirements: ResourceRequirements[SpecT] | None = None
     resources: ResourceSet[ResourceT] = ()
     current_physical: PhysicalAcquisition[ResourceT] | None = None
@@ -83,30 +83,30 @@ class _Cancelled:
 
 
 @dataclass(slots=True)
-class _Acquiring(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT]
+class _Acquiring(Generic[RequestT, SpecT, ResourceT]):
+    context: _AttemptContext[RequestT, SpecT, ResourceT]
 
 
 @dataclass(slots=True)
-class _Pinned(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT]
+class _Pinned(Generic[RequestT, SpecT, ResourceT]):
+    context: _AttemptContext[RequestT, SpecT, ResourceT]
 
 
 @dataclass(slots=True)
-class _Retained(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT]
+class _Retained(Generic[RequestT, SpecT, ResourceT]):
+    context: _AttemptContext[RequestT, SpecT, ResourceT]
 
 
 @dataclass(slots=True)
-class _RetiredPinned(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT]
-    retired: RetiredResource[AccessT, SpecT, ResourceT]
+class _RetiredPinned(Generic[RequestT, SpecT, ResourceT]):
+    context: _AttemptContext[RequestT, SpecT, ResourceT]
+    retired: RetiredResource[RequestT, SpecT, ResourceT]
 
 
 @dataclass(slots=True)
-class _Retired(Generic[AccessT, SpecT, ResourceT]):
-    context: _AttemptContext[AccessT, SpecT, ResourceT] | None
-    retired: RetiredResource[AccessT, SpecT, ResourceT]
+class _Retired(Generic[RequestT, SpecT, ResourceT]):
+    context: _AttemptContext[RequestT, SpecT, ResourceT] | None
+    retired: RetiredResource[RequestT, SpecT, ResourceT]
     cleanup_in_progress: bool = False
 
 
@@ -121,15 +121,15 @@ type _AttemptState[A, S, R] = (
 )
 
 
-class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
+class ResourceManager(Generic[RequestT, SpecT, ResourceT]):
     """Own Resource reservation, terminal physical outcomes, and cleanup."""
 
     def __init__(
         self,
-        requirements_model: ResourceRequirementsModel[AccessT, SpecT],
+        requirements_model: ResourceRequirementsModel[RequestT, SpecT],
         driver: ResourceDriver[SpecT, ResourceT],
         *,
-        resource_pool: ResourcePool[AccessT, SpecT, ResourceT] = GLOBAL_RESOURCE_POOL,
+        resource_pool: ResourcePool[RequestT, SpecT, ResourceT] = GLOBAL_RESOURCE_POOL,
     ) -> None:
         self._requirements_model = requirements_model
         self._driver = driver
@@ -138,11 +138,11 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         self._resource_pool = resource_pool
         self._lock = Lock()
         self._attempts: dict[
-            AttemptId, _AttemptState[AccessT, SpecT, ResourceT]
+            AttemptId, _AttemptState[RequestT, SpecT, ResourceT]
         ] = {}
 
     @property
-    def requirements_model(self) -> ResourceRequirementsModel[AccessT, SpecT]:
+    def requirements_model(self) -> ResourceRequirementsModel[RequestT, SpecT]:
         return self._requirements_model
 
     @property
@@ -150,7 +150,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         return self._driver
 
     @property
-    def resource_pool(self) -> ResourcePool[AccessT, SpecT, ResourceT]:
+    def resource_pool(self) -> ResourcePool[RequestT, SpecT, ResourceT]:
         return self._resource_pool
 
     def open_attempt(self) -> AttemptId:
@@ -164,11 +164,11 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
     def acquire(
         self,
         attempt_id: AttemptId,
-        access: AccessT,
+        request: RequestT,
     ) -> ResourceAcquireResult[ResourceT]:
         self._validate_attempt_id(attempt_id)
-        if access is None:
-            raise TypeError("access cannot be None")
+        if request is None:
+            raise TypeError("request cannot be None")
 
         with self._lock:
             state = self._attempts.get(attempt_id)
@@ -181,12 +181,12 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
             if not isinstance(state, _Pending):
                 raise RuntimeError("attempt can begin only from Pending")
 
-            context = _AttemptContext[AccessT, SpecT, ResourceT](attempt_id, access)
+            context = _AttemptContext[RequestT, SpecT, ResourceT](attempt_id, request)
             acquiring = _Acquiring(context)
             self._attempts[attempt_id] = acquiring
 
         try:
-            requirements = self._requirements_model.requirements(access)
+            requirements = self._requirements_model.requirements(request)
 
             with self._lock:
                 current = self._attempts.get(attempt_id)
@@ -201,7 +201,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
                 reserved = self._resource_pool.reserve(
                     attempt_id,
-                    access,
+                    request,
                     requirements,
                 )
                 if not reserved:
@@ -234,7 +234,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
         self._validate_attempt_id(attempt_id)
 
-        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[RequestT, SpecT, ResourceT] | None = None
         physical: PhysicalAcquisition[ResourceT] | None = None
 
         with self._lock:
@@ -288,7 +288,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         """End the temporary ResourceSet borrow used for Capability projection."""
 
         self._validate_attempt_id(attempt_id)
-        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[RequestT, SpecT, ResourceT] | None = None
         with self._lock:
             state = self._attempts.get(attempt_id)
             if state is None:
@@ -309,7 +309,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         if retired is not None:
             self._schedule_cleanup_retired_attempt(retired)
 
-    def cleanup_retired(self, access: AccessT) -> bool:
+    def cleanup_retired(self, request: RequestT) -> bool:
         """Synchronously retry cleanup of retired entries for operational recovery.
 
         Normal Managed flows never need to call this; retirement schedules cleanup
@@ -317,15 +317,15 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
         driver previously failed.
         """
 
-        if access is None:
-            raise TypeError("access cannot be None")
+        if request is None:
+            raise TypeError("request cannot be None")
 
         with self._lock:
             attempt_ids = tuple(
                 state.retired.attempt
                 for state in self._attempts.values()
                 if isinstance(state, (_RetiredPinned, _Retired))
-                and state.retired.access == access
+                and state.retired.request == request
             )
 
         retired_records = tuple(
@@ -344,7 +344,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _acquire_requirements(
         self,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+        context: _AttemptContext[RequestT, SpecT, ResourceT],
     ) -> Exception | None:
         requirements = context.requirements
         if requirements is None:
@@ -406,9 +406,9 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _commit_acquired(
         self,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+        context: _AttemptContext[RequestT, SpecT, ResourceT],
     ) -> ResourceAcquireResult[ResourceT]:
-        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[RequestT, SpecT, ResourceT] | None = None
         with self._lock:
             state = self._attempts.get(context.attempt_id)
             if not isinstance(state, _Acquiring) or state.context is not context:
@@ -436,12 +436,12 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _fail_attempt(
         self,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+        context: _AttemptContext[RequestT, SpecT, ResourceT],
         primary_error: Exception | None,
     ) -> None:
         """Retire all terminally reported Resources and schedule detached cleanup."""
 
-        retired: RetiredResource[AccessT, SpecT, ResourceT] | None = None
+        retired: RetiredResource[RequestT, SpecT, ResourceT] | None = None
         physical: PhysicalAcquisition[ResourceT] | None = None
         with self._lock:
             current = self._attempts.get(context.attempt_id)
@@ -480,7 +480,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _schedule_cleanup_retired_attempt(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> None:
         """Run cleanup in a detached daemon thread if the attempt is eligible."""
 
@@ -502,7 +502,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _cleanup_retired_attempt(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> Exception | None:
         """Synchronously cleanup one eligible retired entry."""
 
@@ -512,7 +512,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _claim_cleanup(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> bool:
         with self._lock:
             state = self._attempts.get(retired.attempt)
@@ -527,7 +527,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _reset_cleanup_claim(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> None:
         with self._lock:
             current = self._attempts.get(retired.attempt)
@@ -536,7 +536,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _cleanup_claimed_retired_attempt(
         self,
-        retired: RetiredResource[AccessT, SpecT, ResourceT],
+        retired: RetiredResource[RequestT, SpecT, ResourceT],
     ) -> Exception | None:
         """Cleanup an entry whose ``cleanup_in_progress`` claim is already held."""
 
@@ -555,7 +555,7 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     def _is_cancel_requested(
         self,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+        context: _AttemptContext[RequestT, SpecT, ResourceT],
     ) -> bool:
         with self._lock:
             current = self._attempts.get(context.attempt_id)
@@ -565,8 +565,8 @@ class ResourceManager(Generic[AccessT, SpecT, ResourceT]):
 
     @staticmethod
     def _state_uses_context(
-        state: _AttemptState[AccessT, SpecT, ResourceT] | None,
-        context: _AttemptContext[AccessT, SpecT, ResourceT],
+        state: _AttemptState[RequestT, SpecT, ResourceT] | None,
+        context: _AttemptContext[RequestT, SpecT, ResourceT],
     ) -> bool:
         return isinstance(
             state,
