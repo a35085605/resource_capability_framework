@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _attempt import AttemptId
+from _resource.manager import ResourceAttempt
 
 
 GenerationT = TypeVar("GenerationT")
 RequestT = TypeVar("RequestT")
+PhysicalResourceT = TypeVar("PhysicalResourceT")
 CapabilityT = TypeVar("CapabilityT")
 
 
@@ -17,24 +18,24 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
-class Preparing(Generic[GenerationT, RequestT]):
+class Preparing(Generic[GenerationT, RequestT, PhysicalResourceT]):
     generation: GenerationT
     request: RequestT
-    attempt_id: AttemptId
+    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, RequestT, CapabilityT]):
+class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
     generation: GenerationT
     request: RequestT
     capability: CapabilityT
-    attempt_id: AttemptId
+    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
-    | Preparing[GenerationT, RequestT]
-    | Current[GenerationT, RequestT, CapabilityT]
+    | Preparing[GenerationT, RequestT, PhysicalResourceT]
+    | Current[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
 )
 
 

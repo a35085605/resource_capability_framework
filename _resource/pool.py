@@ -5,6 +5,7 @@ from threading import Lock
 from typing import Any, Generic, TypeVar
 
 from _attempt import AttemptId
+from _resource.claim import ResourceClaim, ResourceClaims
 from _resource.key import ResourceKey, ResourceKeys
 from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
@@ -20,16 +21,26 @@ class ResourceReservationRecord(Generic[RequestT, RequirementT]):
 
     attempt: AttemptId
     request: RequestT
-    requirements: ResourceRequirements[RequirementT]
-    keys: ResourceKeys
+    claims: ResourceClaims[RequirementT]
+
+    @property
+    def requirements(self) -> ResourceRequirements[RequirementT]:
+        """Compatibility view of the reserved requirements."""
+
+        return tuple(claim.requirement for claim in self.claims)
+
+    @property
+    def keys(self) -> ResourceKeys:
+        """Compatibility view of the reserved canonical keys."""
+
+        return tuple(claim.key for claim in self.claims)
 
 
 @dataclass(frozen=True, slots=True)
 class _Entry(Generic[RequestT, RequirementT]):
     attempt: AttemptId
     request: RequestT
-    requirements: ResourceRequirements[RequirementT]
-    keys: ResourceKeys
+    claims: ResourceClaims[RequirementT]
 
 
 class ResourceReservationTable(Generic[RequestT, RequirementT]):
@@ -56,10 +67,40 @@ class ResourceReservationTable(Generic[RequestT, RequirementT]):
             raise TypeError("request cannot be None")
 
     @staticmethod
-    def _validate_reservation(
-        requirements: ResourceRequirements[RequirementT],
-        keys: ResourceKeys,
-    ) -> tuple[ResourceRequirements[RequirementT], ResourceKeys]:
+    def _validate_claims(
+        claims: ResourceClaims[RequirementT],
+    ) -> ResourceClaims[RequirementT]:
+        if not isinstance(claims, tuple):
+            raise TypeError("claims must be a tuple")
+
+        seen_keys: set[ResourceKey] = set()
+        for claim in claims:
+            if not isinstance(claim, ResourceClaim):
+                raise TypeError("claims must contain ResourceClaim values")
+            requirement = claim.requirement
+            key = claim.key
+            if not isinstance(requirement, ResourceRequirement):
+                raise TypeError("claims must contain ResourceRequirement values")
+            if not isinstance(requirement.policy, ResourcePolicy):
+                raise TypeError("resource policy must be ResourcePolicy")
+            if not isinstance(key, ResourceKey):
+                raise TypeError("claims must contain ResourceKey values")
+            if key in seen_keys:
+                raise ValueError("claims cannot contain duplicate resource keys")
+            seen_keys.add(key)
+        return claims
+
+    @classmethod
+    def _normalize_claims(
+        cls,
+        claims_or_requirements: ResourceClaims[RequirementT]
+        | ResourceRequirements[RequirementT],
+        keys: ResourceKeys | None,
+    ) -> ResourceClaims[RequirementT]:
+        if keys is None:
+            return cls._validate_claims(claims_or_requirements)  # type: ignore[arg-type]
+
+        requirements = claims_or_requirements
         if not isinstance(requirements, tuple):
             raise TypeError("requirements must be a tuple")
         if not isinstance(keys, tuple):
@@ -67,18 +108,11 @@ class ResourceReservationTable(Generic[RequestT, RequirementT]):
         if len(requirements) != len(keys):
             raise ValueError("requirements and keys must have the same length")
 
-        seen_keys: set[ResourceKey] = set()
-        for requirement, key in zip(requirements, keys, strict=True):
-            if not isinstance(requirement, ResourceRequirement):
-                raise TypeError("requirements must contain ResourceRequirement values")
-            if not isinstance(requirement.policy, ResourcePolicy):
-                raise TypeError("resource policy must be ResourcePolicy")
-            if not isinstance(key, ResourceKey):
-                raise TypeError("keys must contain ResourceKey values")
-            if key in seen_keys:
-                raise ValueError("requirements cannot contain duplicate resource keys")
-            seen_keys.add(key)
-        return requirements, keys
+        claims = tuple(
+            ResourceClaim(requirement, key)
+            for requirement, key in zip(requirements, keys, strict=True)
+        )
+        return cls._validate_claims(claims)
 
     def reservation(
         self,
@@ -99,36 +133,32 @@ class ResourceReservationTable(Generic[RequestT, RequirementT]):
         self,
         attempt: AttemptId,
         request: RequestT,
-        requirements: ResourceRequirements[RequirementT],
-        keys: ResourceKeys,
+        claims_or_requirements: ResourceClaims[RequirementT]
+        | ResourceRequirements[RequirementT],
+        keys: ResourceKeys | None = None,
     ) -> bool:
-        """Atomically conflict-check canonical keys and reserve them for ``attempt``."""
+        """Atomically conflict-check and reserve canonical resource claims.
+
+        Passing ``requirements, keys`` remains supported as a compatibility form; the
+        table normalizes that input to ``ResourceClaim`` values before storing it.
+        """
 
         self._validate_attempt(attempt)
         self._validate_request(request)
-        normalized_requirements, normalized_keys = self._validate_reservation(
-            requirements,
-            keys,
-        )
+        claims = self._normalize_claims(claims_or_requirements, keys)
 
         with self._lock:
             if attempt in self._entries:
                 raise RuntimeError("attempt is already registered in this reservation table")
 
             for state in self._entries.values():
-                if self._conflicts(
-                    state.requirements,
-                    state.keys,
-                    normalized_requirements,
-                    normalized_keys,
-                ):
+                if self._conflicts(state.claims, claims):
                     return False
 
             self._entries[attempt] = _Entry(
                 attempt=attempt,
                 request=request,
-                requirements=normalized_requirements,
-                keys=normalized_keys,
+                claims=claims,
             )
             return True
 
@@ -148,28 +178,21 @@ class ResourceReservationTable(Generic[RequestT, RequirementT]):
         return ResourceReservationRecord(
             state.attempt,
             state.request,
-            state.requirements,
-            state.keys,
+            state.claims,
         )
 
     @staticmethod
     def _conflicts(
-        existing_requirements: ResourceRequirements[RequirementT],
-        existing_keys: ResourceKeys,
-        incoming_requirements: ResourceRequirements[RequirementT],
-        incoming_keys: ResourceKeys,
+        existing_claims: ResourceClaims[RequirementT],
+        incoming_claims: ResourceClaims[RequirementT],
     ) -> bool:
-        existing = zip(existing_requirements, existing_keys, strict=True)
-        existing_pairs = tuple(existing)
-        for incoming_requirement, incoming_key in zip(
-            incoming_requirements,
-            incoming_keys,
-            strict=True,
-        ):
-            for existing_requirement, existing_key in existing_pairs:
-                if existing_key != incoming_key:
+        for incoming in incoming_claims:
+            for existing in existing_claims:
+                if existing.key != incoming.key:
                     continue
-                if existing_requirement.policy is ResourcePolicy.BLOCKING:
+                # Conflict policy is intentionally directional: only the already-held
+                # reservation decides whether a later matching claim is blocked.
+                if existing.requirement.policy is ResourcePolicy.BLOCKING:
                     return True
         return False
 

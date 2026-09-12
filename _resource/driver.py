@@ -55,11 +55,12 @@ class PhysicalAcquisition(Protocol[PhysicalResourceT]):
     terminal typed outcome.  It never publishes intermediate PhysicalResource snapshots.
 
     ``interrupt`` requests termination of an in-progress operation and must not
-    transfer Resource ownership or perform ResourceManager cleanup.  The thread
-    already executing ``acquire`` remains blocked until the physical operation has
-    actually reached a terminal state, then returns a ``PhysicalInterrupted`` (or
-    another terminal outcome) containing every Resource produced by the operation.
-    ``interrupt`` itself may return before ``acquire`` does.
+    transfer Resource ownership or perform ResourceManager cleanup. It must return
+    promptly, be safe to call repeatedly, and tolerate races with ``acquire`` starting
+    or reaching a terminal state. The thread already executing ``acquire`` remains
+    blocked until the physical operation has actually reached a terminal state, then
+    returns a ``PhysicalInterrupted`` (or another terminal outcome) containing every
+    Resource produced by the operation.
 
     Operational failures must be represented as ``PhysicalFailed``.  Exceptions
     escaping ``acquire`` are treated as driver contract/invariant failures.
