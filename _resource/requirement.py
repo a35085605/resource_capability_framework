@@ -11,7 +11,7 @@ SpecT = TypeVar("SpecT")
 
 @dataclass(frozen=True, slots=True)
 class ResourceRequirement(Generic[SpecT]):
-    """One implementation-specific requirement for a physical Resource spec."""
+    """One implementation-specific requirement for a physical-resource spec."""
 
     spec: SpecT
     policy: ResourcePolicy

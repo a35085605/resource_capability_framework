@@ -3,20 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _resource.driver import ResourceSet
+from _resource.driver import PhysicalResourceSet
 
 
-ResourceT = TypeVar("ResourceT")
+PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceAcquired(Generic[ResourceT]):
-    resources: ResourceSet[ResourceT]
+class ResourceAcquired(Generic[PhysicalResourceT]):
+    resources: PhysicalResourceSet[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
 class ResourceBlocked:
-    reason: str = "resource conflict"
+    reason: str = "resource key conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +25,7 @@ class ResourceFailed:
 
 
 ResourceAcquireResult: TypeAlias = (
-    ResourceAcquired[ResourceT] | ResourceBlocked | ResourceFailed
+    ResourceAcquired[PhysicalResourceT] | ResourceBlocked | ResourceFailed
 )
 
 

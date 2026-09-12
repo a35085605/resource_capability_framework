@@ -28,15 +28,15 @@ from _resource.result import ResourceAcquired, ResourceBlocked, ResourceFailed
 
 GenerationT = TypeVar("GenerationT")
 RequestT = TypeVar("RequestT")
-ResourceT = TypeVar("ResourceT")
+PhysicalResourceT = TypeVar("PhysicalResourceT")
 CapabilityT = TypeVar("CapabilityT")
 
 
-class ManagedCoordinator(Generic[GenerationT, RequestT, ResourceT, CapabilityT]):
-    """Coordinate Managed Request state while ResourceManagement owns Resources.
+class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
+    """Coordinate Managed Request state while ResourceManagement owns PhysicalResources.
 
     Managed state contains only generation, Request value, opaque attempt identity,
-    and published Capability.  Resource attempt lifecycle, reservation, physical
+    and published Capability.  Physical-resource attempt lifecycle, reservation, physical
     I/O, interruption, retention, retirement, and cleanup stay below the
     ResourceManagement boundary.
     """
@@ -44,9 +44,9 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, ResourceT, CapabilityT])
     def __init__(
         self,
         issue_generation: Callable[[], GenerationT],
-        resource_manager: ResourceManagement[RequestT, ResourceT],
+        resource_manager: ResourceManagement[RequestT, PhysicalResourceT],
         capability_projection: CapabilityProjection[
-            RequestT, ResourceT, CapabilityT
+            RequestT, PhysicalResourceT, CapabilityT
         ],
     ) -> None:
         if not callable(issue_generation):
@@ -201,7 +201,7 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, ResourceT, CapabilityT])
 
             self._state = Idle(next_generation)
 
-        # Detach Managed authority before retiring the Resource attempt.  Physical
+        # Detach Managed authority before retiring the physical-resource attempt.  Physical
         # interruption and cleanup continue independently below this boundary.
         assert attempt_id is not None
         assert next_generation is not None

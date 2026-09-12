@@ -8,8 +8,9 @@ from _resource.driver import (
     PhysicalFailed,
     PhysicalInterrupted,
     ResourceDriver,
-    ResourceSet,
+    PhysicalResourceSet,
 )
+from _resource.key import ResourceKey, ResourceKeyModel, ResourceKeys
 from _resource.manager import (
     ResourceAcquisitionCancelled,
     ResourceManagement,
@@ -21,9 +22,9 @@ from _resource.pool import (
     AttemptRelease,
     GLOBAL_RESOURCE_POOL,
     ResourcePool,
-    ResourceRecord,
+    PhysicalResourceRecord,
     ResourceRequestRecord,
-    RetiredResource,
+    RetiredPhysicalResource,
 )
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import (
@@ -43,7 +44,12 @@ __all__ = [
     "PhysicalAcquisition",
     "PhysicalFailed",
     "PhysicalInterrupted",
+    "PhysicalResourceRecord",
+    "PhysicalResourceSet",
     "ResourceAcquisitionCancelled",
+    "ResourceKey",
+    "ResourceKeyModel",
+    "ResourceKeys",
     "ResourceAcquireResult",
     "ResourceAcquired",
     "ResourceBlocked",
@@ -52,12 +58,10 @@ __all__ = [
     "ResourceManagement",
     "ResourceManager",
     "ResourcePool",
-    "ResourceRecord",
     "ResourceRequestRecord",
     "ResourceRequirement",
     "ResourceRequirements",
     "ResourceRequirementsModel",
     "ResourcePolicy",
-    "ResourceSet",
-    "RetiredResource",
+    "RetiredPhysicalResource",
 ]

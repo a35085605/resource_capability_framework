@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class ResourcePolicy(Enum):
-    """Whether an existing matching requirement blocks a later matching requirement."""
+    """Whether an existing matching ResourceKey blocks a later matching requirement."""
 
     BLOCKING = "blocking"
     NON_BLOCKING = "non_blocking"
