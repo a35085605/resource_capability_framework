@@ -73,10 +73,6 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         if request is None:
             raise TypeError("request cannot be None")
 
-        with self._lock:
-            if expected != self._state.generation:
-                return GenerationMismatch(self._state.generation)
-
         manager = self._resource_manager
         with self._lock:
             state = self._state
@@ -166,13 +162,6 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             raise TypeError("expected cannot be None")
         if request is None:
             raise TypeError("request cannot be None")
-
-        with self._lock:
-            state = self._state
-            if expected != state.generation:
-                return GenerationMismatch(state.generation)
-            if isinstance(state, Idle):
-                return ReleaseInactive()
 
         next_generation: GenerationT | None = None
         attempt_id: AttemptId | None = None
