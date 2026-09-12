@@ -23,7 +23,7 @@ from _managed.result import (
 from _managed.snapshot import Snapshot
 from _managed.state import Current, Idle, ManagedState, Preparing
 from _resource.manager import ResourceManagement
-from _resource.result import ResourceAcquired, ResourceBlocked, ResourceFailed
+from _resource.result import ResourceBlocked, ResourceFailed, ResourceReady
 
 
 GenerationT = TypeVar("GenerationT")
@@ -96,7 +96,13 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             )
 
         try:
-            result = manager.acquire(attempt_id, request)
+            def project(resources: tuple[PhysicalResourceT, ...]) -> CapabilityT:
+                capability = self._capability_projection.project(request, resources)
+                if capability is None:
+                    raise TypeError("CapabilityProjection.project() cannot return None")
+                return capability
+
+            result = manager.acquire(attempt_id, request, project)
 
             if isinstance(result, ResourceBlocked):
                 abandoned, current_generation = self._abandon_if_current(attempt_id)
@@ -112,15 +118,10 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
                 manager.release(attempt_id)
                 raise result.error
 
-            if not isinstance(result, ResourceAcquired):
+            if not isinstance(result, ResourceReady):
                 raise RuntimeError("unsupported ResourceManagement acquire result")
 
-            capability = self._capability_projection.project(
-                request,
-                result.resources,
-            )
-            if capability is None:
-                raise TypeError("CapabilityProjection.project() cannot return None")
+            capability = result.value
 
             with self._lock:
                 state = self._state
@@ -150,8 +151,6 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
                 if isinstance(exc, Exception):
                     exc.add_note(f"resource release also failed: {release_error!r}")
             raise
-        finally:
-            manager.finish_acquire(attempt_id)
 
     def release(
         self,

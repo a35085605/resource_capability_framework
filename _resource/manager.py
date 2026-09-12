@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
 from typing import Generic, Protocol, TypeVar
@@ -23,15 +24,16 @@ from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import (
     ResourceAcquireResult,
-    ResourceAcquired,
     ResourceBlocked,
     ResourceFailed,
+    ResourceReady,
 )
 
 
 RequestT = TypeVar("RequestT")
 RequirementT = TypeVar("RequirementT", bound=ResourceRequirement)
 PhysicalResourceT = TypeVar("PhysicalResourceT")
+ValueT = TypeVar("ValueT")
 
 
 class ResourceRequirementsModel(Protocol[RequestT, RequirementT]):
@@ -47,8 +49,8 @@ class ResourceManagement(Protocol[RequestT, PhysicalResourceT]):
     concurrent ``release`` cannot be lost. ``release`` revokes Managed retention
     authority and requests interruption of any current physical acquisition without
     waiting for that acquisition or cleanup to complete. Logical reservations remain
-    held until cleanup succeeds. Acquired PhysicalResources remain pinned until
-    ``finish_acquire`` while Capability projection is using them.
+    held until cleanup succeeds. ``acquire`` keeps acquired PhysicalResources alive while
+    ``use_resources`` runs, then publishes only the callback-produced value upward.
     """
 
     def open_attempt(self) -> AttemptId: ...
@@ -57,11 +59,10 @@ class ResourceManagement(Protocol[RequestT, PhysicalResourceT]):
         self,
         attempt_id: AttemptId,
         request: RequestT,
-    ) -> ResourceAcquireResult[PhysicalResourceT]: ...
+        use_resources: Callable[[PhysicalResourceSet[PhysicalResourceT]], ValueT],
+    ) -> ResourceAcquireResult[ValueT]: ...
 
     def release(self, attempt_id: AttemptId) -> None: ...
-
-    def finish_acquire(self, attempt_id: AttemptId) -> None: ...
 
 
 class ResourceAcquisitionCancelled(RuntimeError):
@@ -95,15 +96,13 @@ class _Acquiring(Generic[RequestT, RequirementT, PhysicalResourceT]):
 
 
 @dataclass(slots=True)
-class _Pinned(Generic[RequestT, RequirementT, PhysicalResourceT]):
+class _Active(Generic[RequestT, RequirementT, PhysicalResourceT]):
     context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT]
-    projection_pending: bool = True
 
 
 @dataclass(slots=True)
 class _Retired(Generic[RequestT, RequirementT, PhysicalResourceT]):
     context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT]
-    projection_pending: bool = False
     cleanup_in_progress: bool = False
 
 
@@ -111,7 +110,7 @@ type _AttemptState[A, S, R] = (
     _Pending
     | _Cancelled
     | _Acquiring[A, S, R]
-    | _Pinned[A, S, R]
+    | _Active[A, S, R]
     | _Retired[A, S, R]
 )
 
@@ -188,14 +187,18 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
         self,
         attempt_id: AttemptId,
         request: RequestT,
-    ) -> ResourceAcquireResult[PhysicalResourceT]:
+        use_resources: Callable[[PhysicalResourceSet[PhysicalResourceT]], ValueT],
+    ) -> ResourceAcquireResult[ValueT]:
         self._validate_attempt_id(attempt_id)
         if request is None:
             raise TypeError("request cannot be None")
+        if not callable(use_resources):
+            raise TypeError("use_resources must be callable")
 
         with self._lock:
             state = self._attempts.get(attempt_id)
             if isinstance(state, _Cancelled):
+                self._attempts.pop(attempt_id, None)
                 return ResourceFailed(
                     ResourceAcquisitionCancelled("attempt was cancelled")
                 )
@@ -241,12 +244,13 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 self._fail_attempt(context, failure)
                 return ResourceFailed(failure)
 
-            return self._commit_acquired(context)
+            value = use_resources(context.resources)
+            return self._commit_ready(context, value)
 
         except BaseException:
             # Operational physical failures are typed PhysicalFailed outcomes. Any
-            # exception escaping acquire() is therefore a contract/invariant failure,
-            # but ResourceManager still retires every Resource it knows it owns.
+            # exception escaping acquire(), including one raised by use_resources, keeps
+            # its original semantics. ResourceManager still retires every Resource it owns.
             self._fail_attempt(context, None)
             raise
 
@@ -277,11 +281,8 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 context = state.context
                 context.cancel_requested = True
                 physical = context.current_physical
-            elif isinstance(state, _Pinned):
-                self._attempts[attempt_id] = _Retired(
-                    state.context,
-                    projection_pending=state.projection_pending,
-                )
+            elif isinstance(state, _Active):
+                self._attempts[attempt_id] = _Retired(state.context)
                 retired_attempt = attempt_id
             elif isinstance(state, _Retired):
                 retired_attempt = attempt_id
@@ -296,32 +297,6 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 # accepting interruption. acquire() must still reach a terminal
                 # outcome, possibly by completing naturally.
                 pass
-
-        if retired_attempt is not None:
-            self._schedule_cleanup_retired_attempt(retired_attempt)
-
-    def finish_acquire(self, attempt_id: AttemptId) -> None:
-        """End the temporary PhysicalResourceSet borrow used for Capability projection."""
-
-        self._validate_attempt_id(attempt_id)
-        retired_attempt: AttemptId | None = None
-        with self._lock:
-            state = self._attempts.get(attempt_id)
-            if state is None:
-                return
-            if isinstance(state, _Cancelled):
-                self._attempts.pop(attempt_id, None)
-                return
-            if isinstance(state, _Pinned):
-                state.projection_pending = False
-                return
-            if isinstance(state, _Retired):
-                if state.projection_pending:
-                    state.projection_pending = False
-                    retired_attempt = attempt_id
-            elif isinstance(state, _Acquiring):
-                if state.context.cancel_requested and not state.context.reserved:
-                    self._attempts.pop(attempt_id, None)
 
         if retired_attempt is not None:
             self._schedule_cleanup_retired_attempt(retired_attempt)
@@ -437,10 +412,11 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
 
         return None
 
-    def _commit_acquired(
+    def _commit_ready(
         self,
         context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT],
-    ) -> ResourceAcquireResult[PhysicalResourceT]:
+        value: ValueT,
+    ) -> ResourceAcquireResult[ValueT]:
         retired_attempt: AttemptId | None = None
         with self._lock:
             state = self._attempts.get(context.attempt_id)
@@ -450,8 +426,8 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 raise RuntimeError("resource attempt was not reserved")
 
             if not context.cancel_requested:
-                self._attempts[context.attempt_id] = _Pinned(context)
-                return ResourceAcquired(context.resources)
+                self._attempts[context.attempt_id] = _Active(context)
+                return ResourceReady(value)
 
             self._attempts[context.attempt_id] = _Retired(context)
             retired_attempt = context.attempt_id
@@ -523,8 +499,6 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
             state = self._attempts.get(attempt_id)
             if not isinstance(state, _Retired):
                 return False
-            if state.projection_pending:
-                return False
             if state.cleanup_in_progress:
                 return False
             state.cleanup_in_progress = True
@@ -579,7 +553,7 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
     ) -> bool:
         return isinstance(
             state,
-            (_Acquiring, _Pinned, _Retired),
+            (_Acquiring, _Active, _Retired),
         ) and state.context is context
 
     @staticmethod

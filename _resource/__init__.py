@@ -29,9 +29,9 @@ from _resource.pool import (
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import (
     ResourceAcquireResult,
-    ResourceAcquired,
     ResourceBlocked,
     ResourceFailed,
+    ResourceReady,
 )
 
 
@@ -52,7 +52,6 @@ __all__ = [
     "ResourceKeyModel",
     "ResourceKeys",
     "ResourceAcquireResult",
-    "ResourceAcquired",
     "ResourceBlocked",
     "ResourceDriver",
     "ResourceFailed",
@@ -64,5 +63,6 @@ __all__ = [
     "ResourceRequirement",
     "ResourceRequirements",
     "ResourceRequirementsModel",
+    "ResourceReady",
     "ResourcePolicy",
 ]
