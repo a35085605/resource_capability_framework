@@ -1,6 +1,7 @@
 """Physical resource coordination, I/O, and cleanup primitives."""
 
 from _attempt import AttemptId
+from _resource.cleanup import CleanupScheduler, DaemonThreadCleanupScheduler
 from _resource.driver import (
     PhysicalAcquireOutcome,
     PhysicalAcquired,
@@ -38,6 +39,8 @@ from _resource.result import (
 __all__ = [
     "AttemptId",
     "AttemptRelease",
+    "CleanupScheduler",
+    "DaemonThreadCleanupScheduler",
     "GLOBAL_RESOURCE_POOL",
     "PhysicalAcquireOutcome",
     "PhysicalAcquired",

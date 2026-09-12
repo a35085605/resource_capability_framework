@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from threading import Lock, Thread
+from threading import Lock
 from typing import Generic, Protocol, TypeVar
 
 from _attempt import AttemptId
+from _resource.cleanup import CleanupScheduler, DaemonThreadCleanupScheduler
 from _resource.driver import (
     PhysicalAcquired,
     PhysicalAcquisition,
@@ -124,6 +125,7 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
         resource_pool: ResourcePool[
             RequestT, RequirementT, PhysicalResourceT
         ] = GLOBAL_RESOURCE_POOL,
+        cleanup_scheduler: CleanupScheduler | None = None,
     ) -> None:
         self._requirements_model = requirements_model
         if not callable(getattr(key_model, "key_for", None)):
@@ -133,6 +135,11 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
         if not isinstance(resource_pool, ResourcePool):
             raise TypeError("resource_pool must be ResourcePool")
         self._resource_pool = resource_pool
+        if cleanup_scheduler is None:
+            cleanup_scheduler = DaemonThreadCleanupScheduler()
+        if not callable(getattr(cleanup_scheduler, "schedule", None)):
+            raise TypeError("cleanup_scheduler must provide schedule(job)")
+        self._cleanup_scheduler = cleanup_scheduler
         self._lock = Lock()
         self._attempts: dict[
             AttemptId, _AttemptState[RequestT, RequirementT, PhysicalResourceT]
@@ -153,6 +160,10 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
     @property
     def resource_pool(self) -> ResourcePool[RequestT, RequirementT, PhysicalResourceT]:
         return self._resource_pool
+
+    @property
+    def cleanup_scheduler(self) -> CleanupScheduler:
+        return self._cleanup_scheduler
 
     def open_attempt(self) -> AttemptId:
         """Create and register one Pending acquisition identity."""
@@ -505,22 +516,22 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
         self,
         retired: RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT],
     ) -> None:
-        """Run cleanup in a detached daemon thread if the attempt is eligible."""
+        """Submit detached cleanup if the retired attempt is eligible."""
 
         if not self._claim_cleanup(retired):
             return
 
-        worker = Thread(
-            target=self._cleanup_claimed_retired_attempt,
-            args=(retired,),
-            name=f"resource-cleanup-{id(retired.attempt):x}",
-            daemon=True,
-        )
+        def cleanup_job() -> None:
+            self._cleanup_claimed_retired_attempt(retired)
+
         try:
-            worker.start()
+            scheduled = self._cleanup_scheduler.schedule(cleanup_job)
         except Exception:
-            # Thread creation failure must not make Managed release fail. Keep the
-            # retired entry available for a later release/cleanup_retired retry.
+            scheduled = False
+
+        if not scheduled:
+            # Submission failure must not make Managed release fail. Keep the retired
+            # entry available for a later release/cleanup_retired retry.
             self._reset_cleanup_claim(retired)
 
     def _cleanup_retired_attempt(
