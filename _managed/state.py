@@ -18,6 +18,12 @@ class Idle(Generic[GenerationT]):
 
 
 @dataclass(frozen=True, slots=True)
+class Acquiring(Generic[GenerationT, RequestT]):
+    generation: GenerationT
+    request: RequestT
+
+
+@dataclass(frozen=True, slots=True)
 class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
     generation: GenerationT
     request: RequestT
@@ -26,19 +32,29 @@ class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
 
 
 @dataclass(frozen=True, slots=True)
-class CleanupPending(Generic[GenerationT, RequestT, PhysicalResourceT]):
-    """Managed authority is detached while synchronous cleanup awaits retry."""
-
+class Releasing(Generic[GenerationT, RequestT, PhysicalResourceT]):
     generation: GenerationT
     request: RequestT
     attempt: ResourceAttempt[RequestT, PhysicalResourceT]
 
 
+@dataclass(frozen=True, slots=True)
+class CleanupPending(Generic[GenerationT, RequestT, PhysicalResourceT]):
+    """Capability is unavailable and the failed release/rollback awaits retry."""
+
+    generation: GenerationT
+    request: RequestT
+    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
+    last_error: BaseException
+
+
 ManagedState: TypeAlias = (
     Idle[GenerationT]
+    | Acquiring[GenerationT, RequestT]
     | Current[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
+    | Releasing[GenerationT, RequestT, PhysicalResourceT]
     | CleanupPending[GenerationT, RequestT, PhysicalResourceT]
 )
 
 
-__all__ = ["CleanupPending", "Current", "Idle", "ManagedState"]
+__all__ = ["Acquiring", "CleanupPending", "Current", "Idle", "ManagedState", "Releasing"]

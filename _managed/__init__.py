@@ -14,8 +14,15 @@ from _managed.result import (
     ReleaseInactive,
     ReleaseResult,
 )
-from _managed.snapshot import Snapshot
-from _managed.state import CleanupPending, Current, Idle, ManagedState
+from _managed.snapshot import ManagedPhase, Snapshot
+from _managed.state import (
+    Acquiring,
+    CleanupPending,
+    Current,
+    Idle,
+    ManagedState,
+    Releasing,
+)
 from _resource.manager import ResourceCleanupPendingError
 
 
@@ -25,17 +32,20 @@ __all__ = [
     "AcquireCommitted",
     "AcquireExisting",
     "AcquireResult",
+    "Acquiring",
     "AttemptId",
     "CleanupPending",
     "Current",
     "GenerationMismatch",
     "Idle",
     "ManagedCoordinator",
+    "ManagedPhase",
     "ManagedState",
     "ReleaseRequestMismatch",
     "ReleaseDetached",
     "ReleaseInactive",
     "ReleaseResult",
+    "Releasing",
     "ResourceCleanupPendingError",
     "Snapshot",
 ]
