@@ -16,6 +16,7 @@ from _managed.result import (
 )
 from _managed.snapshot import Snapshot
 from _managed.state import CleanupPending, Current, Idle, ManagedState
+from _resource.manager import ResourceCleanupPendingError
 
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "ReleaseDetached",
     "ReleaseInactive",
     "ReleaseResult",
+    "ResourceCleanupPendingError",
     "Snapshot",
 ]

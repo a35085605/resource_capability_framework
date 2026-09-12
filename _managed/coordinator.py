@@ -19,7 +19,11 @@ from _managed.result import (
 )
 from _managed.snapshot import Snapshot
 from _managed.state import CleanupPending, Current, Idle, ManagedState
-from _resource.manager import ResourceAttempt, ResourceManagement
+from _resource.manager import (
+    ResourceAttempt,
+    ResourceCleanupPendingError,
+    ResourceManagement,
+)
 from _resource.result import ResourceBlocked, ResourceFailed, ResourceReady
 
 
@@ -105,20 +109,41 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
 
             if isinstance(result, ResourceFailed):
                 self._retain_cleanup_if_needed(generation, request, attempt)
+                if isinstance(result.error, ResourceCleanupPendingError):
+                    raise result.error from result.error.primary_error
                 raise result.error
 
-            if not isinstance(result, ResourceReady):
-                raise RuntimeError("unsupported ResourceManagement acquire result")
+            try:
+                if not isinstance(result, ResourceReady):
+                    raise RuntimeError(
+                        "unsupported ResourceManagement acquire result"
+                    )
 
-            snapshot = Snapshot(generation, request, result.value)
-            with self._lock:
-                self._state = Current(
-                    generation,
-                    request,
-                    result.value,
-                    attempt,
-                )
-            return AcquireCommitted(snapshot)
+                snapshot = Snapshot(generation, request, result.value)
+                with self._lock:
+                    self._state = Current(
+                        generation,
+                        request,
+                        result.value,
+                        attempt,
+                    )
+                return AcquireCommitted(snapshot)
+            except BaseException as exc:
+                # Once an attempt reports success, any later failure before commit must
+                # synchronously relinquish the uncommitted resources. This also protects
+                # the ResourceManagement protocol boundary from malformed implementations.
+                try:
+                    attempt.release()
+                except Exception as cleanup_error:
+                    self._retain_cleanup_if_needed(generation, request, attempt)
+                    if attempt.cleanup_pending and isinstance(exc, Exception):
+                        raise ResourceCleanupPendingError(
+                            exc, cleanup_error
+                        ) from exc
+                    exc.add_note(
+                        f"resource cleanup also failed: {cleanup_error!r}"
+                    )
+                raise
 
     def release(
         self,

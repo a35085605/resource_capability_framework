@@ -30,6 +30,25 @@ PhysicalResourceT = TypeVar("PhysicalResourceT")
 ValueT = TypeVar("ValueT")
 
 
+class ResourceCleanupPendingError(RuntimeError):
+    """Acquisition/projection failed and rollback cleanup also failed.
+
+    The attempt still owns its reservation and remaining resources. The caller must
+    explicitly retry ``release`` before the reservation can be considered available.
+    """
+
+    def __init__(self, primary_error: Exception, cleanup_error: Exception) -> None:
+        if not isinstance(primary_error, Exception):
+            raise TypeError("primary_error must be an Exception")
+        if not isinstance(cleanup_error, Exception):
+            raise TypeError("cleanup_error must be an Exception")
+        self.primary_error = primary_error
+        self.cleanup_error = cleanup_error
+        super().__init__(
+            f"{primary_error}; rollback resource cleanup also failed: {cleanup_error}"
+        )
+
+
 class ResourceRequirementsModel(Protocol[RequestT, RequirementT]):
     """Resolve only the physical-resource requirements for one Request."""
 
@@ -138,8 +157,8 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
             if failure is not None:
                 cleanup_error = self._cleanup_reserved()
                 if cleanup_error is not None:
-                    failure.add_note(
-                        f"resource cleanup also failed: {cleanup_error!r}"
+                    return ResourceFailed(
+                        ResourceCleanupPendingError(failure, cleanup_error)
                     )
                 return ResourceFailed(failure)
 
@@ -151,6 +170,8 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
             if self._reserved:
                 cleanup_error = self._cleanup_reserved()
                 if cleanup_error is not None:
+                    if isinstance(exc, Exception):
+                        raise ResourceCleanupPendingError(exc, cleanup_error) from exc
                     exc.add_note(f"resource cleanup also failed: {cleanup_error!r}")
             else:
                 self._phase = _AttemptPhase.DONE
@@ -217,14 +238,22 @@ class _ResourceAttempt(Generic[RequestT, RequirementT, PhysicalResourceT]):
             return None
 
         self._phase = _AttemptPhase.CLEANUP_PENDING
+        if self._resources:
+            try:
+                self._driver.cleanup(self._resources)
+            except Exception as exc:
+                return exc
+
+        # Physical cleanup has completed. Clear the resource set before releasing the
+        # logical reservation so a reservation-table failure cannot make a later retry
+        # clean already-retired resources again.
+        self._resources = ()
         try:
-            self._driver.cleanup(self._resources)
             self._reservation_table.release_reservation(self._id)
         except Exception as exc:
             return exc
 
         self._reserved = False
-        self._resources = ()
         self._phase = _AttemptPhase.DONE
         return None
 
@@ -300,6 +329,7 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
 
 
 __all__ = [
+    "ResourceCleanupPendingError",
     "ResourceAttempt",
     "ResourceManagement",
     "ResourceManager",

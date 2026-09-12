@@ -11,6 +11,7 @@ from _resource.driver import (
 )
 from _resource.key import ResourceKey, ResourceKeyModel, ResourceKeys
 from _resource.manager import (
+    ResourceCleanupPendingError,
     ResourceAttempt,
     ResourceManagement,
     ResourceManager,
@@ -43,6 +44,7 @@ __all__ = [
     "PhysicalAcquired",
     "PhysicalFailed",
     "PhysicalResourceSet",
+    "ResourceCleanupPendingError",
     "ResourceAttempt",
     "ResourceKey",
     "ResourceKeyModel",
