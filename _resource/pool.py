@@ -5,7 +5,6 @@ from threading import Lock
 from typing import Any, Generic, TypeVar
 
 from _attempt import AttemptId
-from _resource.driver import PhysicalResourceSet
 from _resource.key import ResourceKey, ResourceKeys
 from _resource.policy import ResourcePolicy
 from _resource.requirement import ResourceRequirement, ResourceRequirements
@@ -13,74 +12,38 @@ from _resource.requirement import ResourceRequirement, ResourceRequirements
 
 RequestT = TypeVar("RequestT")
 RequirementT = TypeVar("RequirementT", bound=ResourceRequirement)
-PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceRequestRecord(Generic[RequestT, RequirementT]):
-    """Immutable view of one reserved attempt still being physically acquired."""
+class ResourceReservationRecord(Generic[RequestT, RequirementT]):
+    """Immutable view of one logical resource reservation."""
 
     attempt: AttemptId
     request: RequestT
     requirements: ResourceRequirements[RequirementT]
     keys: ResourceKeys
-    retired: bool
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicalResourceRecord(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    """Immutable point-in-time view of one retained or retired physical-resource set."""
-
+class _Entry(Generic[RequestT, RequirementT]):
     attempt: AttemptId
     request: RequestT
     requirements: ResourceRequirements[RequirementT]
     keys: ResourceKeys
-    resources: PhysicalResourceSet[PhysicalResourceT]
-    retired: bool = False
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class RetiredPhysicalResource(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    """Exact retired attempt retained until physical cleanup succeeds."""
+class ResourceReservationTable(Generic[RequestT, RequirementT]):
+    """Process-wide logical-resource reservation table.
 
-    attempt: AttemptId
-    request: RequestT
-    requirements: ResourceRequirements[RequirementT]
-    keys: ResourceKeys
-    resources: PhysicalResourceSet[PhysicalResourceT]
-
-
-@dataclass(frozen=True, slots=True)
-class AttemptRelease(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    """Result of asking one attempt to stop or release its retained resources."""
-
-    processing: bool
-    retired: RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT] | None = None
-
-
-@dataclass(slots=True)
-class _Entry(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    attempt: AttemptId
-    request: RequestT
-    requirements: ResourceRequirements[RequirementT]
-    keys: ResourceKeys
-    resources: PhysicalResourceSet[PhysicalResourceT] | None = None
-    processing: bool = True
-    retired: bool = False
-
-
-class ResourcePool(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    """Process-wide reservation and retention registry.
-
-    Entries remain keyed by ``AttemptId`` for lifecycle ownership. Logical resource
-    conflicts are determined only by canonical ``ResourceKey`` values resolved before
-    reservation; requirements are retained for inspection and driver execution but
-    their equality does not define resource identity.
+    Entries remain keyed by ``AttemptId`` until the owning ``ResourceManager`` has
+    completed physical cleanup. The table knows nothing about physical acquisition,
+    retention, retirement, or cleanup; it only provides atomic conflict checking and
+    reservation ownership for canonical ``ResourceKey`` values.
     """
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._entries: dict[AttemptId, _Entry[RequestT, RequirementT, PhysicalResourceT]] = {}
+        self._entries: dict[AttemptId, _Entry[RequestT, RequirementT]] = {}
 
     @staticmethod
     def _validate_attempt(attempt: AttemptId) -> None:
@@ -117,80 +80,20 @@ class ResourcePool(Generic[RequestT, RequirementT, PhysicalResourceT]):
             seen_keys.add(key)
         return requirements, keys
 
-    def snapshot(
-        self,
-    ) -> tuple[PhysicalResourceRecord[RequestT, RequirementT, PhysicalResourceT], ...]:
-        with self._lock:
-            return tuple(
-                PhysicalResourceRecord(
-                    state.attempt,
-                    state.request,
-                    state.requirements,
-                    state.keys,
-                    state.resources,
-                    state.retired,
-                )
-                for state in self._entries.values()
-                if not state.processing and state.resources is not None
-            )
-
-    def request_snapshot(
+    def reservation(
         self,
         attempt: AttemptId,
-    ) -> ResourceRequestRecord[RequestT, RequirementT] | None:
+    ) -> ResourceReservationRecord[RequestT, RequirementT] | None:
         self._validate_attempt(attempt)
         with self._lock:
             state = self._entries.get(attempt)
-            if state is None or not state.processing:
+            if state is None:
                 return None
-            return self._request_record_locked(state)
+            return self._record_locked(state)
 
-    def requests(self) -> tuple[ResourceRequestRecord[RequestT, RequirementT], ...]:
+    def reservations(self) -> tuple[ResourceReservationRecord[RequestT, RequirementT], ...]:
         with self._lock:
-            return tuple(
-                self._request_record_locked(state)
-                for state in self._entries.values()
-                if state.processing
-            )
-
-    def lookup(
-        self,
-        request: RequestT,
-        key: ResourceKey,
-    ) -> tuple[PhysicalResourceSet[PhysicalResourceT], ...]:
-        """Return retained physical-resource sets associated with ``request`` + ``key``."""
-
-        self._validate_request(request)
-        if not isinstance(key, ResourceKey):
-            raise TypeError("key must be ResourceKey")
-        with self._lock:
-            return tuple(
-                state.resources
-                for state in self._entries.values()
-                if not state.processing
-                and state.resources is not None
-                and state.request == request
-                and not state.retired
-                and key in state.keys
-            )
-
-    def retired(
-        self,
-        attempt: AttemptId,
-    ) -> RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT] | None:
-        """Return the exact retired physical-resource set identified by ``attempt``."""
-
-        self._validate_attempt(attempt)
-        with self._lock:
-            state = self._entries.get(attempt)
-            if (
-                state is None
-                or state.processing
-                or not state.retired
-                or state.resources is None
-            ):
-                return None
-            return self._retired_view(state)
+            return tuple(self._record_locked(state) for state in self._entries.values())
 
     def reserve(
         self,
@@ -210,7 +113,7 @@ class ResourcePool(Generic[RequestT, RequirementT, PhysicalResourceT]):
 
         with self._lock:
             if attempt in self._entries:
-                raise RuntimeError("attempt is already registered in this pool")
+                raise RuntimeError("attempt is already registered in this reservation table")
 
             for state in self._entries.values():
                 if self._conflicts(
@@ -229,116 +132,24 @@ class ResourcePool(Generic[RequestT, RequirementT, PhysicalResourceT]):
             )
             return True
 
-    def release(
-        self,
-        attempt: AttemptId,
-    ) -> AttemptRelease[RequestT, RequirementT, PhysicalResourceT]:
-        """Idempotently revoke retention authority for ``attempt``."""
+    def release_reservation(self, attempt: AttemptId) -> None:
+        """Release an exact reservation after physical cleanup has succeeded."""
 
         self._validate_attempt(attempt)
         with self._lock:
-            state = self._entries.get(attempt)
-            if state is None:
-                return AttemptRelease(processing=False)
-
-            state.retired = True
-            if state.processing:
-                return AttemptRelease(processing=True)
-            if state.resources is None:
-                raise RuntimeError("finished resource attempt has no PhysicalResourceSet")
-            return AttemptRelease(processing=False, retired=self._retired_view(state))
-
-    def finish(
-        self,
-        attempt: AttemptId,
-        resources: PhysicalResourceSet[PhysicalResourceT],
-    ) -> RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT] | None:
-        """Publish the final PhysicalResourceSet and end processing for ``attempt``."""
-
-        self._validate_resources(resources)
-        with self._lock:
-            state = self._require_entry_locked(attempt)
-            if not state.processing:
-                raise RuntimeError("resource attempt is already finished")
-            state.resources = resources
-            state.processing = False
-            if not state.retired:
-                return None
-            return self._retired_view(state)
-
-    def cancel(self, attempt: AttemptId) -> bool:
-        """Cancel a reservation before any physical acquisition has started."""
-
-        self._validate_attempt(attempt)
-        with self._lock:
-            state = self._entries.get(attempt)
-            if state is None or not state.processing:
-                return False
+            if attempt not in self._entries:
+                raise RuntimeError("resource attempt is not reserved")
             del self._entries[attempt]
-            return True
-
-    def discard(
-        self,
-        retired: RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT],
-    ) -> None:
-        if not isinstance(retired, RetiredPhysicalResource):
-            raise TypeError("retired must be RetiredPhysicalResource")
-
-        with self._lock:
-            state = self._entries.get(retired.attempt)
-            if state is None:
-                raise RuntimeError("retired physical resource is not retained")
-            if state.resources is not retired.resources:
-                raise RuntimeError(
-                    "retired physical resource does not match retained resources"
-                )
-            if state.processing:
-                raise RuntimeError("processing resource attempt cannot be discarded")
-            if not state.retired:
-                raise RuntimeError("physical resource set must be retired before discard")
-            del self._entries[retired.attempt]
 
     @staticmethod
-    def _validate_resources(resources: PhysicalResourceSet[PhysicalResourceT]) -> None:
-        if resources is None:
-            raise TypeError("resources cannot be None")
-        if not isinstance(resources, tuple):
-            raise TypeError("resources must be a PhysicalResourceSet tuple")
-
-    def _require_entry_locked(
-        self,
-        attempt: AttemptId,
-    ) -> _Entry[RequestT, RequirementT, PhysicalResourceT]:
-        self._validate_attempt(attempt)
-        state = self._entries.get(attempt)
-        if state is None:
-            raise RuntimeError("resource attempt is not current")
-        return state
-
-    @staticmethod
-    def _request_record_locked(
-        state: _Entry[RequestT, RequirementT, PhysicalResourceT],
-    ) -> ResourceRequestRecord[RequestT, RequirementT]:
-        return ResourceRequestRecord(
+    def _record_locked(
+        state: _Entry[RequestT, RequirementT],
+    ) -> ResourceReservationRecord[RequestT, RequirementT]:
+        return ResourceReservationRecord(
             state.attempt,
             state.request,
             state.requirements,
             state.keys,
-            state.retired,
-        )
-
-    @staticmethod
-    def _retired_view(
-        state: _Entry[RequestT, RequirementT, PhysicalResourceT],
-    ) -> RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT]:
-        if state.resources is None:
-            raise RuntimeError("retired physical resource has no PhysicalResourceSet")
-        return RetiredPhysicalResource(
-            state.attempt,
-            state.request,
-            state.requirements,
-            state.keys,
-            state.resources,
         )
 
     @staticmethod
@@ -363,14 +174,20 @@ class ResourcePool(Generic[RequestT, RequirementT, PhysicalResourceT]):
         return False
 
 
-GLOBAL_RESOURCE_POOL: ResourcePool[Any, Any, Any] = ResourcePool()
+GLOBAL_RESOURCE_RESERVATION_TABLE: ResourceReservationTable[Any, Any] = (
+    ResourceReservationTable()
+)
+
+# Compatibility names for callers that still construct/inject the old pool object.
+# The aliased object now provides reservation semantics only.
+ResourcePool = ResourceReservationTable
+GLOBAL_RESOURCE_POOL = GLOBAL_RESOURCE_RESERVATION_TABLE
 
 
 __all__ = [
-    "AttemptRelease",
     "GLOBAL_RESOURCE_POOL",
-    "PhysicalResourceRecord",
+    "GLOBAL_RESOURCE_RESERVATION_TABLE",
     "ResourcePool",
-    "ResourceRequestRecord",
-    "RetiredPhysicalResource",
+    "ResourceReservationRecord",
+    "ResourceReservationTable",
 ]

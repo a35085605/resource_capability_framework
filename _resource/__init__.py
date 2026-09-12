@@ -20,12 +20,11 @@ from _resource.manager import (
 )
 from _resource.policy import ResourcePolicy
 from _resource.pool import (
-    AttemptRelease,
     GLOBAL_RESOURCE_POOL,
+    GLOBAL_RESOURCE_RESERVATION_TABLE,
     ResourcePool,
-    PhysicalResourceRecord,
-    ResourceRequestRecord,
-    RetiredPhysicalResource,
+    ResourceReservationRecord,
+    ResourceReservationTable,
 )
 from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import (
@@ -38,16 +37,15 @@ from _resource.result import (
 
 __all__ = [
     "AttemptId",
-    "AttemptRelease",
     "CleanupScheduler",
     "DaemonThreadCleanupScheduler",
     "GLOBAL_RESOURCE_POOL",
+    "GLOBAL_RESOURCE_RESERVATION_TABLE",
     "PhysicalAcquireOutcome",
     "PhysicalAcquired",
     "PhysicalAcquisition",
     "PhysicalFailed",
     "PhysicalInterrupted",
-    "PhysicalResourceRecord",
     "PhysicalResourceSet",
     "ResourceAcquisitionCancelled",
     "ResourceKey",
@@ -61,10 +59,10 @@ __all__ = [
     "ResourceManagement",
     "ResourceManager",
     "ResourcePool",
-    "ResourceRequestRecord",
+    "ResourceReservationRecord",
+    "ResourceReservationTable",
     "ResourceRequirement",
     "ResourceRequirements",
     "ResourceRequirementsModel",
     "ResourcePolicy",
-    "RetiredPhysicalResource",
 ]
