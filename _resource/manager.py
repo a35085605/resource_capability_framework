@@ -92,23 +92,14 @@ class _Acquiring(Generic[RequestT, RequirementT, PhysicalResourceT]):
 @dataclass(slots=True)
 class _Pinned(Generic[RequestT, RequirementT, PhysicalResourceT]):
     context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT]
-
-
-@dataclass(slots=True)
-class _Retained(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT]
-
-
-@dataclass(slots=True)
-class _RetiredPinned(Generic[RequestT, RequirementT, PhysicalResourceT]):
-    context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT]
-    retired: RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT]
+    projection_pending: bool = True
 
 
 @dataclass(slots=True)
 class _Retired(Generic[RequestT, RequirementT, PhysicalResourceT]):
     context: _AttemptContext[RequestT, RequirementT, PhysicalResourceT] | None
     retired: RetiredPhysicalResource[RequestT, RequirementT, PhysicalResourceT]
+    projection_pending: bool = False
     cleanup_in_progress: bool = False
 
 
@@ -117,8 +108,6 @@ type _AttemptState[A, S, R] = (
     | _Cancelled
     | _Acquiring[A, S, R]
     | _Pinned[A, S, R]
-    | _Retained[A, S, R]
-    | _RetiredPinned[A, S, R]
     | _Retired[A, S, R]
 )
 
@@ -274,15 +263,11 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 retired = release.retired
                 if retired is None:
                     raise RuntimeError("pinned resource attempt was not retained")
-                self._attempts[attempt_id] = _RetiredPinned(state.context, retired)
-            elif isinstance(state, _Retained):
-                release = self._resource_pool.release(attempt_id)
-                retired = release.retired
-                if retired is None:
-                    raise RuntimeError("retained resource attempt was not retained")
-                self._attempts[attempt_id] = _Retired(state.context, retired)
-            elif isinstance(state, _RetiredPinned):
-                return
+                self._attempts[attempt_id] = _Retired(
+                    state.context,
+                    retired,
+                    projection_pending=state.projection_pending,
+                )
             elif isinstance(state, _Retired):
                 retired = state.retired
             else:
@@ -313,11 +298,12 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 self._attempts.pop(attempt_id, None)
                 return
             if isinstance(state, _Pinned):
-                self._attempts[attempt_id] = _Retained(state.context)
+                state.projection_pending = False
                 return
-            if isinstance(state, _RetiredPinned):
-                retired = state.retired
-                self._attempts[attempt_id] = _Retired(state.context, retired)
+            if isinstance(state, _Retired):
+                if state.projection_pending:
+                    state.projection_pending = False
+                    retired = state.retired
             elif isinstance(state, _Acquiring):
                 if state.context.cancel_requested and not state.context.reserved:
                     self._attempts.pop(attempt_id, None)
@@ -340,7 +326,7 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
             attempt_ids = tuple(
                 state.retired.attempt
                 for state in self._attempts.values()
-                if isinstance(state, (_RetiredPinned, _Retired))
+                if isinstance(state, _Retired)
                 and state.retired.request == request
             )
 
@@ -553,9 +539,9 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
     ) -> bool:
         with self._lock:
             state = self._attempts.get(retired.attempt)
-            if isinstance(state, _RetiredPinned):
-                return False
             if not isinstance(state, _Retired):
+                return False
+            if state.projection_pending:
                 return False
             if state.cleanup_in_progress:
                 return False
@@ -607,7 +593,7 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
     ) -> bool:
         return isinstance(
             state,
-            (_Acquiring, _Pinned, _Retained, _RetiredPinned, _Retired),
+            (_Acquiring, _Pinned, _Retired),
         ) and state.context is context
 
     @staticmethod
