@@ -1,14 +1,14 @@
 """Contracts and result models for synchronous physical-resource management."""
 
-from _lifecycle.resource.contract import ResourceProvider, ResourceRequirementsResolver
-from _lifecycle.resource.driver import (
+from _lifecycle_new.resource.contract import ResourceProvider, ResourceRequirementsResolver
+from _lifecycle_new.resource.driver import (
     RequirementAcquireFailed,
     RequirementAcquireResult,
     RequirementAcquireSucceeded,
     PhysicalResources,
     ResourceDriver,
 )
-from _lifecycle.resource.result import (
+from _lifecycle_new.resource.result import (
     ResourceAcquireFailed,
     ResourceAcquireResult,
     ResourceAcquireSucceeded,

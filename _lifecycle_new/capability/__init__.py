@@ -1,7 +1,7 @@
 """Contracts and result models for capability lifecycles."""
 
-from _lifecycle.capability.projection import CapabilityProjector
-from _lifecycle.capability.result import (
+from _lifecycle_new.capability.projection import CapabilityProjector
+from _lifecycle_new.capability.result import (
     AcquireAlreadyActive,
     AcquireFailed,
     AcquireReleaseRequired,
@@ -16,7 +16,7 @@ from _lifecycle.capability.result import (
     ReleaseResult,
     ReleaseSucceeded,
 )
-from _lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
+from _lifecycle_new.capability.snapshot import LifecyclePhase, LifecycleSnapshot
 
 
 __all__ = [

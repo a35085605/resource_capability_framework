@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from _lifecycle.resource.driver import RequirementAcquireFailed, RequirementAcquireSucceeded
-from _lifecycle.resource.manager import ResolvedResourceProvider
-from _lifecycle.resource.result import ResourceAcquireFailed
+from _lifecycle_new.resource.driver import RequirementAcquireFailed, RequirementAcquireSucceeded
+from _lifecycle_new.resource.manager import ResolvedResourceProvider
+from _lifecycle_new.resource.result import ResourceAcquireFailed
 
 
 @dataclass(frozen=True)

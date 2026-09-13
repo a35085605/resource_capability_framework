@@ -4,7 +4,7 @@ import subprocess
 import sys
 import unittest
 
-from _lifecycle.capability.snapshot import LifecyclePhase
+from _lifecycle_new.capability.snapshot import LifecyclePhase
 from api.adb_server import AdbServerPhase
 
 

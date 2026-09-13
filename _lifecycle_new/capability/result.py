@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
+from _lifecycle_new.capability.snapshot import LifecyclePhase, LifecycleSnapshot
 
 
 GenerationT = TypeVar("GenerationT")

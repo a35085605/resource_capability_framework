@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
-from _lifecycle.resource.driver import PhysicalResources
-from _lifecycle.resource.result import ResourceAcquireResult
+from _lifecycle_new.resource.driver import PhysicalResources
+from _lifecycle_new.resource.result import ResourceAcquireResult
 
 
 RequestT = TypeVar("RequestT")
