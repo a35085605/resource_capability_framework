@@ -1,6 +1,6 @@
-"""Pure capability projection contracts."""
+"""Capability projection contracts."""
 
-from _capability.projection import CapabilityProjection
+from _capability.projection import CapabilityProjector
 
 
-__all__ = ["CapabilityProjection"]
+__all__ = ["CapabilityProjector"]

@@ -1,30 +1,34 @@
-"""Synchronous physical resource I/O primitives."""
+"""Synchronous physical-resource acquisition and release primitives."""
 
 from _resource.driver import (
-    PhysicalAcquireOutcome,
-    PhysicalAcquired,
-    PhysicalFailed,
+    PhysicalAcquireFailed,
+    PhysicalAcquireResult,
+    PhysicalAcquireSucceeded,
+    PhysicalResources,
     ResourceDriver,
-    PhysicalResourceSet,
 )
 from _resource.manager import (
-    ResourceManagement,
     ResourceManager,
-    ResourceRequirementsModel,
+    ResourceProvider,
+    ResourceRequirementsResolver,
 )
-from _resource.result import ResourceAcquireResult, ResourceFailed, ResourceReady
+from _resource.result import (
+    ResourceAcquireFailed,
+    ResourceAcquireResult,
+    ResourceAcquireSucceeded,
+)
 
 
 __all__ = [
-    "PhysicalAcquireOutcome",
-    "PhysicalAcquired",
-    "PhysicalFailed",
-    "PhysicalResourceSet",
+    "PhysicalAcquireFailed",
+    "PhysicalAcquireResult",
+    "PhysicalAcquireSucceeded",
+    "PhysicalResources",
+    "ResourceAcquireFailed",
     "ResourceAcquireResult",
+    "ResourceAcquireSucceeded",
     "ResourceDriver",
-    "ResourceFailed",
-    "ResourceManagement",
     "ResourceManager",
-    "ResourceRequirementsModel",
-    "ResourceReady",
+    "ResourceProvider",
+    "ResourceRequirementsResolver",
 ]

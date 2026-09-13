@@ -17,7 +17,11 @@ def _normalize_required_text(value: object, *, field_name: str) -> str:
 @total_ordering
 @dataclass(frozen=True, slots=True, eq=False)
 class TcpAddress:
-    """Validated TCP host and port endpoint."""
+    """Represent a validated TCP host and port endpoint.
+
+    ``host`` is stripped of leading and trailing whitespace and must remain non-empty.
+    ``port`` must be an integer-like value from 1 through 65535, excluding booleans.
+    """
 
     host: str
     port: int

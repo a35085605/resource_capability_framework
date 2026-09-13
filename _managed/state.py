@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _resource.driver import PhysicalResourceSet
+from _resource.driver import PhysicalResources
 
 
 GenerationT = TypeVar("GenerationT")
@@ -14,47 +14,66 @@ CapabilityT = TypeVar("CapabilityT")
 
 @dataclass(frozen=True, slots=True)
 class Idle(Generic[GenerationT]):
+    """Internal state for a generation with no request in progress."""
+
     generation: GenerationT
 
 
 @dataclass(frozen=True, slots=True)
 class Acquiring(Generic[GenerationT, RequestT]):
+    """Internal state while acquiring resources and projecting a capability."""
+
     generation: GenerationT
     request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
-class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
+class Active(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
+    """Internal state for the active request, capability, and retained resources."""
+
     generation: GenerationT
     request: RequestT
     capability: CapabilityT
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
 class Releasing(Generic[GenerationT, RequestT, PhysicalResourceT]):
+    """Internal state while releasing resources or issuing the next generation."""
+
     generation: GenerationT
     request: RequestT
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class CleanupPending(Generic[GenerationT, RequestT, PhysicalResourceT]):
-    """Capability is unavailable and release must be retried for this generation."""
+class ReleasePending(Generic[GenerationT, RequestT, PhysicalResourceT]):
+    """Internal state for a generation that still requires successful release.
+
+    ``resources`` may already be empty when physical cleanup succeeded but issuing the
+    next generation failed. Retrying release must therefore not assume cleanup remains.
+    """
 
     generation: GenerationT
     request: RequestT
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
     last_error: BaseException
 
 
 ManagedState: TypeAlias = (
     Idle[GenerationT]
     | Acquiring[GenerationT, RequestT]
-    | Current[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
+    | Active[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
     | Releasing[GenerationT, RequestT, PhysicalResourceT]
-    | CleanupPending[GenerationT, RequestT, PhysicalResourceT]
+    | ReleasePending[GenerationT, RequestT, PhysicalResourceT]
 )
 
 
-__all__ = ["Acquiring", "CleanupPending", "Current", "Idle", "ManagedState", "Releasing"]
+__all__ = [
+    "Acquiring",
+    "Active",
+    "Idle",
+    "ManagedState",
+    "ReleasePending",
+    "Releasing",
+]

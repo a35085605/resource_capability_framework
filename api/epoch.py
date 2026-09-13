@@ -7,7 +7,11 @@ from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 @dataclass(frozen=True, slots=True, order=True)
 class Epoch:
-    """Strongly typed monotonic lifetime ordinal."""
+    """Represent a positive integer ordinal for one lifetime.
+
+    ``Epoch`` validates the ordinal value itself; monotonic issuance is a responsibility
+    of an issuer such as ``EpochSequence``.
+    """
 
     value: int
 
@@ -26,14 +30,19 @@ EpochT = TypeVar("EpochT", bound=Epoch)
 
 @runtime_checkable
 class EpochIssuer(Protocol[EpochT]):
-    """Issue monotonically increasing epochs within one ownership scope."""
+    """Issue monotonically increasing epochs within one issuer scope."""
 
     def issue(self) -> EpochT:
+        """Return an epoch newer than every epoch previously issued here."""
         ...
 
 
 class EpochSequence(Generic[EpochT]):
-    """Thread-safe monotonically increasing issuer for one concrete epoch type."""
+    """Thread-safely issue consecutive epochs of one concrete epoch type.
+
+    The first issued value is ``initial_value + 1`` and each later call increments it by
+    one within this sequence instance.
+    """
 
     def __init__(self, epoch_type: type[EpochT], *, initial_value: int = 0) -> None:
         if not isinstance(epoch_type, type) or not issubclass(epoch_type, Epoch):
@@ -47,6 +56,8 @@ class EpochSequence(Generic[EpochT]):
         self._current = initial_value
 
     def issue(self) -> EpochT:
+        """Atomically increment the sequence and return the resulting epoch."""
+
         with self._lock:
             self._current += 1
             return self._epoch_type(self._current)

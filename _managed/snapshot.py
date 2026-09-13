@@ -11,28 +11,26 @@ CapabilityT = TypeVar("CapabilityT")
 
 
 class ManagedPhase(Enum):
-    """Observable progress of a synchronous Managed lifecycle."""
+    """Observable phase of a synchronous managed lifecycle."""
 
     IDLE = "idle"
     ACQUIRING = "acquiring"
-    CURRENT = "current"
+    ACTIVE = "active"
     RELEASING = "releasing"
-    CLEANUP_PENDING = "cleanup_pending"
+    RELEASE_PENDING = "release_pending"
 
 
 @dataclass(frozen=True, slots=True)
-class Snapshot(Generic[GenerationT, RequestT, CapabilityT]):
-    """Point-in-time lifecycle observation; it does not lease Capability.
+class ManagedSnapshot(Generic[GenerationT, RequestT, CapabilityT]):
+    """Describe one consistent point-in-time view of a managed lifecycle.
 
-    ``request`` identifies the lifecycle in every phase except IDLE. Only CURRENT
-    exposes ``capability``. ACQUIRING includes physical acquisition and projection.
-    RELEASING includes physical cleanup and generation advancement.
-    CLEANUP_PENDING retains the request and ``last_error`` until an explicit release
-    completes, including acquisition/projection failure, cleanup failure, or generation
-    advancement failure after cleanup has already succeeded.
+    IDLE exposes only ``generation``. ACQUIRING and RELEASING also expose ``request``.
+    ACTIVE additionally exposes ``capability``. RELEASE_PENDING exposes ``request`` and
+    ``last_error`` and requires an explicit release attempt before the generation can
+    complete.
 
-    Observations can become stale immediately. Pass ``generation`` and ``request``
-    back to the coordinator to validate an operation; reading is not a reservation.
+    A snapshot can become stale immediately. Pass its ``generation`` and the matching
+    ``request`` back to the coordinator to validate a subsequent lifecycle operation.
     """
 
     generation: GenerationT
@@ -48,14 +46,14 @@ class Snapshot(Generic[GenerationT, RequestT, CapabilityT]):
             raise TypeError("phase must be ManagedPhase")
         if (self.request is None) != (self.phase is ManagedPhase.IDLE):
             raise ValueError("request must be present exactly when phase is not IDLE")
-        if (self.capability is not None) != (self.phase is ManagedPhase.CURRENT):
-            raise ValueError("capability must be present exactly when phase is CURRENT")
+        if (self.capability is not None) != (self.phase is ManagedPhase.ACTIVE):
+            raise ValueError("capability must be present exactly when phase is ACTIVE")
         if self.last_error is not None and not isinstance(self.last_error, BaseException):
             raise TypeError("last_error must be a BaseException")
-        if (self.last_error is not None) != (self.phase is ManagedPhase.CLEANUP_PENDING):
+        if (self.last_error is not None) != (self.phase is ManagedPhase.RELEASE_PENDING):
             raise ValueError(
-                "last_error must be present exactly when phase is CLEANUP_PENDING"
+                "last_error must be present exactly when phase is RELEASE_PENDING"
             )
 
 
-__all__ = ["ManagedPhase", "Snapshot"]
+__all__ = ["ManagedPhase", "ManagedSnapshot"]

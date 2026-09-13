@@ -3,34 +3,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _resource.driver import PhysicalResourceSet
+from _resource.driver import PhysicalResources
 
 
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceReady(Generic[PhysicalResourceT]):
-    """All requirements were acquired successfully."""
+class ResourceAcquireSucceeded(Generic[PhysicalResourceT]):
+    """Report that all requirements were acquired successfully."""
 
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceFailed(Generic[PhysicalResourceT]):
-    """Acquisition failed while retaining every resource obtained so far."""
+class ResourceAcquireFailed(Generic[PhysicalResourceT]):
+    """Report acquisition failure while retaining all reported resources.
+
+    The caller is responsible for passing ``resources`` to release when lifecycle
+    cleanup is required.
+    """
 
     error: BaseException
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
 ResourceAcquireResult: TypeAlias = (
-    ResourceReady[PhysicalResourceT] | ResourceFailed[PhysicalResourceT]
+    ResourceAcquireSucceeded[PhysicalResourceT]
+    | ResourceAcquireFailed[PhysicalResourceT]
 )
 
 
 __all__ = [
+    "ResourceAcquireFailed",
     "ResourceAcquireResult",
-    "ResourceFailed",
-    "ResourceReady",
+    "ResourceAcquireSucceeded",
 ]

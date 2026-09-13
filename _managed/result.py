@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _managed.snapshot import ManagedPhase, Snapshot
+from _managed.snapshot import ManagedPhase, ManagedSnapshot
 
 
 GenerationT = TypeVar("GenerationT")
@@ -13,12 +13,18 @@ CapabilityT = TypeVar("CapabilityT")
 
 @dataclass(frozen=True, slots=True)
 class GenerationMismatch(Generic[GenerationT]):
+    """Report that the expected generation is stale."""
+
     current_generation: GenerationT
 
 
 @dataclass(frozen=True, slots=True)
 class Busy:
-    """Another synchronous lifecycle operation is currently performing I/O."""
+    """Report that another acquire or release operation is still in progress.
+
+    ACQUIRING covers resource acquisition and capability projection. RELEASING covers
+    physical cleanup and next-generation issuance.
+    """
 
     phase: ManagedPhase
 
@@ -29,31 +35,37 @@ class Busy:
 
 @dataclass(frozen=True, slots=True)
 class AcquireExisting(Generic[GenerationT, RequestT, CapabilityT]):
-    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
+    """Report that the requested lifecycle is already active."""
+
+    snapshot: ManagedSnapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
 class AcquireRequestMismatch(Generic[RequestT]):
+    """Report that another request is active for the expected generation."""
+
     current_request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
 class AcquireReleaseRequired(Generic[GenerationT, RequestT, CapabilityT]):
-    """The current generation failed earlier and must be released before acquisition."""
+    """Report that a prior failure must be completed through release first."""
 
-    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
+    snapshot: ManagedSnapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
 class AcquireFailed(Generic[GenerationT, RequestT, CapabilityT]):
-    """Acquisition or capability projection failed and now requires release."""
+    """Report acquisition or projection failure that now requires release."""
 
-    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
+    snapshot: ManagedSnapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
-class AcquireCommitted(Generic[GenerationT, RequestT, CapabilityT]):
-    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
+class AcquireSucceeded(Generic[GenerationT, RequestT, CapabilityT]):
+    """Report successful acquisition of an active capability."""
+
+    snapshot: ManagedSnapshot[GenerationT, RequestT, CapabilityT]
 
 
 AcquireResult: TypeAlias = (
@@ -63,30 +75,32 @@ AcquireResult: TypeAlias = (
     | AcquireRequestMismatch[RequestT]
     | AcquireReleaseRequired[GenerationT, RequestT, CapabilityT]
     | AcquireFailed[GenerationT, RequestT, CapabilityT]
-    | AcquireCommitted[GenerationT, RequestT, CapabilityT]
+    | AcquireSucceeded[GenerationT, RequestT, CapabilityT]
 )
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseRequestMismatch(Generic[RequestT]):
+    """Report that release targeted a different request in the current generation."""
+
     current_request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
-class ReleaseInactive:
-    """Current generation has no active or cleanup-pending Request."""
+class ReleaseAlreadyIdle:
+    """Report that the current generation has no request requiring release."""
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseFailed(Generic[GenerationT, RequestT, CapabilityT]):
-    """Release cleanup or generation advancement failed and may be retried."""
+    """Report release failure that can be retried for the same generation."""
 
-    snapshot: Snapshot[GenerationT, RequestT, CapabilityT]
+    snapshot: ManagedSnapshot[GenerationT, RequestT, CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
-class ReleaseDetached(Generic[GenerationT]):
-    """Synchronous cleanup completed and Managed returned to Idle."""
+class ReleaseSucceeded(Generic[GenerationT]):
+    """Report completed release and the newly issued idle generation."""
 
     next_generation: GenerationT
 
@@ -95,24 +109,24 @@ ReleaseResult: TypeAlias = (
     GenerationMismatch[GenerationT]
     | Busy
     | ReleaseRequestMismatch[RequestT]
-    | ReleaseInactive
+    | ReleaseAlreadyIdle
     | ReleaseFailed[GenerationT, RequestT, CapabilityT]
-    | ReleaseDetached[GenerationT]
+    | ReleaseSucceeded[GenerationT]
 )
 
 
 __all__ = [
-    "AcquireCommitted",
     "AcquireExisting",
     "AcquireFailed",
     "AcquireReleaseRequired",
     "AcquireRequestMismatch",
     "AcquireResult",
+    "AcquireSucceeded",
     "Busy",
     "GenerationMismatch",
-    "ReleaseDetached",
+    "ReleaseAlreadyIdle",
     "ReleaseFailed",
-    "ReleaseInactive",
     "ReleaseRequestMismatch",
     "ReleaseResult",
+    "ReleaseSucceeded",
 ]

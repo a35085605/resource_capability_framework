@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias, runtime_checkable
 
 from _managed.result import AcquireResult, ReleaseResult
-from _managed.snapshot import ManagedPhase, Snapshot
+from _managed.snapshot import ManagedPhase, ManagedSnapshot
 from api.epoch import Epoch, EpochSequence
 from api.networking_address import TcpAddress
 
@@ -13,6 +13,8 @@ class _AdbServerGenerationEpoch(Epoch):
 
 @dataclass(frozen=True, slots=True)
 class AdbServerGeneration:
+    """Identify one ADB server lifecycle generation."""
+
     _epoch: _AdbServerGenerationEpoch = field(repr=False)
 
     def __post_init__(self) -> None:
@@ -24,6 +26,8 @@ class AdbServerGeneration:
 
 
 class AdbServerGenerationIssuer:
+    """Issue monotonically increasing ADB server generations."""
+
     __slots__ = ("_sequence",)
 
     def __init__(self, *, after: AdbServerGeneration | None = None) -> None:
@@ -33,19 +37,21 @@ class AdbServerGenerationIssuer:
         self._sequence = EpochSequence(_AdbServerGenerationEpoch, initial_value=initial_value)
 
     def issue(self) -> AdbServerGeneration:
-        """Issue a fresh server generation."""
+        """Issue a generation newer than every generation previously issued here."""
 
         return AdbServerGeneration(self._sequence.issue())
 
 
 @dataclass(frozen=True, slots=True)
 class AdbServerRequest:
+    """Request an ADB server at a specific TCP address."""
 
     server_address: TcpAddress
 
 
 @dataclass(frozen=True, slots=True)
 class AdbServerCapability:
+    """Describe the TCP address provided by an active ADB server lifecycle."""
 
     server_address: TcpAddress
 
@@ -53,7 +59,7 @@ class AdbServerCapability:
 AdbServerPhase: TypeAlias = ManagedPhase
 
 
-AdbServerState: TypeAlias = Snapshot[
+AdbServerSnapshot: TypeAlias = ManagedSnapshot[
     AdbServerGeneration,
     AdbServerRequest,
     AdbServerCapability,
@@ -75,15 +81,17 @@ AdbServerReleaseResult: TypeAlias = ReleaseResult[
 
 
 @runtime_checkable
-class AdbServerStateView(Protocol):
-    """Read a linearizable snapshot of current server authority and usable capability."""
+class AdbServerSnapshotReader(Protocol):
+    """Read a consistent point-in-time ADB server lifecycle snapshot."""
 
-    def read(self) -> AdbServerState:
-        """Return one atomic generation/request/capability snapshot without leasing capability."""
+    def read(self) -> AdbServerSnapshot:
+        """Return the current generation, phase, and phase-specific fields."""
         ...
 
 
-class AdbServerLifecycle(AdbServerStateView, Protocol):
+class AdbServerLifecycle(AdbServerSnapshotReader, Protocol):
+    """Acquire and release one generation-scoped ADB server capability."""
+
     def acquire(
         self,
         expected_generation: AdbServerGeneration,
@@ -98,7 +106,7 @@ class AdbServerLifecycle(AdbServerStateView, Protocol):
 
 
 class AdbServerLifecycleFactory(Protocol):
-    """Construct one runtime-scoped ADB server lifecycle."""
+    """Build an ADB server lifecycle using the supplied generation issuer."""
 
     def __call__(
         self,

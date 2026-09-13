@@ -7,55 +7,52 @@ RequirementT = TypeVar("RequirementT", contravariant=True)
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
-type PhysicalResourceSet[T] = tuple[T, ...]
+type PhysicalResources[T] = tuple[T, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicalAcquired(Generic[PhysicalResourceT]):
-    """Physical acquisition completed normally with its final PhysicalResourceSet."""
+class PhysicalAcquireSucceeded(Generic[PhysicalResourceT]):
+    """Report successful acquisition for one physical-resource requirement."""
 
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicalFailed(Generic[PhysicalResourceT]):
-    """Physical acquisition reached a terminal operational failure.
+class PhysicalAcquireFailed(Generic[PhysicalResourceT]):
+    """Report terminal acquisition failure for one requirement.
 
-    ``resources`` contains every PhysicalResource created by this requirement before
-    failure. ResourceManager combines them with resources from earlier requirements.
+    ``resources`` contains every physical resource created for the requirement before
+    the failure. The caller retains those resources for a later cleanup attempt.
     """
 
     error: Exception
-    resources: PhysicalResourceSet[PhysicalResourceT]
+    resources: PhysicalResources[PhysicalResourceT]
 
 
-type PhysicalAcquireOutcome[T] = PhysicalAcquired[T] | PhysicalFailed[T]
+type PhysicalAcquireResult[T] = PhysicalAcquireSucceeded[T] | PhysicalAcquireFailed[T]
 
 
 class ResourceDriver(Protocol[RequirementT, PhysicalResourceT]):
-    """Synchronous physical resource I/O driven only by a resource requirement.
+    """Perform synchronous physical I/O for individual requirements.
 
-    Drivers do not know about Managed requests, generations, lifecycle state, leases,
-    or capability projection. ``acquire`` performs one requirement's physical I/O and
-    returns one terminal outcome. ResourceManager only aggregates those outcomes.
-
-    ``cleanup`` must be safe to retry with the same ``resources`` after it raises. A
-    cleanup implementation may therefore be called again after partially completing a
-    previous cleanup attempt, and must tolerate already-cleaned members.
+    ``acquire`` handles one requirement and reports every resource created before its
+    terminal result; it does not roll back resources on failure. ``cleanup`` may be
+    retried with the same resources after raising and must tolerate members that were
+    already cleaned up by an earlier attempt.
     """
 
     def acquire(
         self,
         requirement: RequirementT,
-    ) -> PhysicalAcquireOutcome[PhysicalResourceT]: ...
+    ) -> PhysicalAcquireResult[PhysicalResourceT]: ...
 
-    def cleanup(self, resources: PhysicalResourceSet[PhysicalResourceT]) -> None: ...
+    def cleanup(self, resources: PhysicalResources[PhysicalResourceT]) -> None: ...
 
 
 __all__ = [
-    "PhysicalAcquireOutcome",
-    "PhysicalAcquired",
-    "PhysicalFailed",
+    "PhysicalAcquireFailed",
+    "PhysicalAcquireResult",
+    "PhysicalAcquireSucceeded",
+    "PhysicalResources",
     "ResourceDriver",
-    "PhysicalResourceSet",
 ]

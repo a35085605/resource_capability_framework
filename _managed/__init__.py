@@ -1,53 +1,53 @@
-"""Managed Request and capability coordination primitives."""
+"""Managed request and capability lifecycle primitives."""
 
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
-    AcquireCommitted,
     AcquireExisting,
     AcquireFailed,
     AcquireReleaseRequired,
     AcquireRequestMismatch,
     AcquireResult,
+    AcquireSucceeded,
     Busy,
     GenerationMismatch,
-    ReleaseDetached,
+    ReleaseAlreadyIdle,
     ReleaseFailed,
-    ReleaseInactive,
     ReleaseRequestMismatch,
     ReleaseResult,
+    ReleaseSucceeded,
 )
-from _managed.snapshot import ManagedPhase, Snapshot
+from _managed.snapshot import ManagedPhase, ManagedSnapshot
 from _managed.state import (
     Acquiring,
-    CleanupPending,
-    Current,
+    Active,
     Idle,
     ManagedState,
+    ReleasePending,
     Releasing,
 )
 
 
 __all__ = [
-    "AcquireCommitted",
     "AcquireExisting",
     "AcquireFailed",
     "AcquireReleaseRequired",
     "AcquireRequestMismatch",
     "AcquireResult",
+    "AcquireSucceeded",
     "Acquiring",
+    "Active",
     "Busy",
-    "CleanupPending",
-    "Current",
     "GenerationMismatch",
     "Idle",
     "ManagedCoordinator",
     "ManagedPhase",
+    "ManagedSnapshot",
     "ManagedState",
-    "ReleaseDetached",
+    "ReleaseAlreadyIdle",
     "ReleaseFailed",
-    "ReleaseInactive",
+    "ReleasePending",
     "ReleaseRequestMismatch",
     "ReleaseResult",
+    "ReleaseSucceeded",
     "Releasing",
-    "Snapshot",
 ]
