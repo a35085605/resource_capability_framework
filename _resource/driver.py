@@ -3,10 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
-from _resource.requirement import ResourceRequirement
-
-
-RequirementT = TypeVar("RequirementT", bound=ResourceRequirement, contravariant=True)
+RequirementT = TypeVar("RequirementT", contravariant=True)
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 

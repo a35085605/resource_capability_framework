@@ -8,19 +8,18 @@ from _resource.driver import (
     PhysicalResourceSet,
     ResourceDriver,
 )
-from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import ResourceAcquireResult, ResourceFailed, ResourceReady
 
 
 RequestT = TypeVar("RequestT")
-RequirementT = TypeVar("RequirementT", bound=ResourceRequirement)
+RequirementT = TypeVar("RequirementT")
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
 class ResourceRequirementsModel(Protocol[RequestT, RequirementT]):
     """Resolve only the physical-resource requirements for one Request."""
 
-    def requirements(self, request: RequestT) -> ResourceRequirements[RequirementT]: ...
+    def requirements(self, request: RequestT) -> tuple[RequirementT, ...]: ...
 
 
 class ResourceManagement(Protocol[RequestT, PhysicalResourceT]):

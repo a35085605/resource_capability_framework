@@ -12,7 +12,6 @@ from _resource.manager import (
     ResourceManager,
     ResourceRequirementsModel,
 )
-from _resource.requirement import ResourceRequirement, ResourceRequirements
 from _resource.result import ResourceAcquireResult, ResourceFailed, ResourceReady
 
 
@@ -26,8 +25,6 @@ __all__ = [
     "ResourceFailed",
     "ResourceManagement",
     "ResourceManager",
-    "ResourceRequirement",
-    "ResourceRequirements",
     "ResourceRequirementsModel",
     "ResourceReady",
 ]
