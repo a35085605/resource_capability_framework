@@ -4,16 +4,16 @@ import unittest
 from collections.abc import Callable
 from threading import Event, Thread
 
-from _managed.coordinator import ManagedCoordinator
+from _managed.coordinator import CapabilityLifecycleCoordinator
 from _managed.result import (
     AcquireFailed,
     AcquireReleaseRequired,
     AcquireSucceeded,
-    Busy,
+    LifecycleBusy,
     ReleaseFailed,
     ReleaseSucceeded,
 )
-from _managed.snapshot import ManagedPhase
+from _managed.snapshot import LifecyclePhase
 from _resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
 
 
@@ -83,15 +83,15 @@ class Projector:
         return f"capability:{request}:{','.join(resources)}"
 
 
-class ManagedCoordinatorTests(unittest.TestCase):
+class CapabilityLifecycleCoordinatorTests(unittest.TestCase):
     def make_coordinator(
         self,
         *,
         issuer: Callable[[], int] | None = None,
         provider: StubResourceProvider | None = None,
         projector: object | None = None,
-    ) -> ManagedCoordinator[int, str, str, str]:
-        return ManagedCoordinator(
+    ) -> CapabilityLifecycleCoordinator[int, str, str, str]:
+        return CapabilityLifecycleCoordinator(
             issuer or SequenceIssuer(),
             provider or StubResourceProvider(),
             projector or Projector(),
@@ -107,7 +107,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
         )
         self.assertIsInstance(acquired, AcquireSucceeded)
         self.assertEqual(coordinator.read().generation, initial.generation)
-        self.assertIs(coordinator.read().phase, ManagedPhase.ACTIVE)
+        self.assertIs(coordinator.read().phase, LifecyclePhase.ACTIVE)
 
         released = coordinator.release(
             expected_generation=initial.generation,
@@ -115,7 +115,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
         )
         self.assertIsInstance(released, ReleaseSucceeded)
         self.assertGreater(released.next_generation, initial.generation)
-        self.assertIs(coordinator.read().phase, ManagedPhase.IDLE)
+        self.assertIs(coordinator.read().phase, LifecyclePhase.IDLE)
 
     def test_failed_acquire_requires_release_even_when_no_resources_exist(self) -> None:
         provider = StubResourceProvider(
@@ -131,7 +131,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
             request="request-a",
         )
         self.assertIsInstance(failed, AcquireFailed)
-        self.assertIs(failed.snapshot.phase, ManagedPhase.RELEASE_PENDING)
+        self.assertIs(failed.snapshot.phase, LifecyclePhase.RELEASE_REQUIRED)
 
         blocked = coordinator.acquire(
             expected_generation=generation,
@@ -158,7 +158,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
             request="request-a",
         )
         self.assertIsInstance(failed, AcquireFailed)
-        self.assertIs(failed.snapshot.phase, ManagedPhase.RELEASE_PENDING)
+        self.assertIs(failed.snapshot.phase, LifecyclePhase.RELEASE_REQUIRED)
 
         released = coordinator.release(
             expected_generation=generation,
@@ -221,7 +221,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
         )
         self.assertIsInstance(failed, ReleaseFailed)
         self.assertEqual(failed.snapshot.generation, generation)
-        self.assertIs(failed.snapshot.phase, ManagedPhase.RELEASE_PENDING)
+        self.assertIs(failed.snapshot.phase, LifecyclePhase.RELEASE_REQUIRED)
 
         retried = coordinator.release(
             expected_generation=generation,
@@ -287,8 +287,8 @@ class ManagedCoordinatorTests(unittest.TestCase):
             expected_generation=generation,
             request="request-a",
         )
-        self.assertEqual(acquire_busy, Busy(ManagedPhase.ACQUIRING))
-        self.assertEqual(release_busy, Busy(ManagedPhase.ACQUIRING))
+        self.assertEqual(acquire_busy, LifecycleBusy(LifecyclePhase.ACQUIRING))
+        self.assertEqual(release_busy, LifecycleBusy(LifecyclePhase.ACQUIRING))
 
         continue_acquire.set()
         worker.join(timeout=2)
@@ -322,11 +322,11 @@ class ManagedCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(
             coordinator.acquire(generation, "request-a"),
-            Busy(ManagedPhase.ACQUIRING),
+            LifecycleBusy(LifecyclePhase.ACQUIRING),
         )
         self.assertEqual(
             coordinator.release(generation, "request-a"),
-            Busy(ManagedPhase.ACQUIRING),
+            LifecycleBusy(LifecyclePhase.ACQUIRING),
         )
 
         continue_projection.set()
@@ -367,8 +367,8 @@ class ManagedCoordinatorTests(unittest.TestCase):
             expected_generation=generation,
             request="request-a",
         )
-        self.assertEqual(acquire_busy, Busy(ManagedPhase.RELEASING))
-        self.assertEqual(release_busy, Busy(ManagedPhase.RELEASING))
+        self.assertEqual(acquire_busy, LifecycleBusy(LifecyclePhase.RELEASING))
+        self.assertEqual(release_busy, LifecycleBusy(LifecyclePhase.RELEASING))
 
         continue_release.set()
         worker.join(timeout=2)
@@ -396,11 +396,11 @@ class ManagedCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(
             coordinator.acquire(generation, "request-a"),
-            Busy(ManagedPhase.RELEASING),
+            LifecycleBusy(LifecyclePhase.RELEASING),
         )
         self.assertEqual(
             coordinator.release(generation, "request-a"),
-            Busy(ManagedPhase.RELEASING),
+            LifecycleBusy(LifecyclePhase.RELEASING),
         )
 
         continue_issue.set()
@@ -424,7 +424,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
 
         self.assertIs(raised.exception, interruption)
         snapshot = coordinator.read()
-        self.assertIs(snapshot.phase, ManagedPhase.RELEASE_PENDING)
+        self.assertIs(snapshot.phase, LifecyclePhase.RELEASE_REQUIRED)
         self.assertEqual(snapshot.generation, generation)
         self.assertEqual(snapshot.request, "request-a")
         self.assertIs(snapshot.last_error, interruption)
@@ -449,7 +449,7 @@ class ManagedCoordinatorTests(unittest.TestCase):
 
         self.assertIs(raised.exception, interruption)
         snapshot = coordinator.read()
-        self.assertIs(snapshot.phase, ManagedPhase.RELEASE_PENDING)
+        self.assertIs(snapshot.phase, LifecyclePhase.RELEASE_REQUIRED)
         self.assertEqual(snapshot.generation, generation)
         self.assertEqual(snapshot.request, "request-a")
         self.assertIs(snapshot.last_error, interruption)

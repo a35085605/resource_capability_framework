@@ -2,9 +2,9 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias, runtime_checkable
 
 from _managed.result import AcquireResult, ReleaseResult
-from _managed.snapshot import ManagedPhase, ManagedSnapshot
+from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
 from api.epoch import Epoch, EpochSequence
-from api.networking_address import TcpAddress
+from api.networking_address import TcpEndpoint
 
 
 class _AdbServerGenerationEpoch(Epoch):
@@ -46,20 +46,20 @@ class AdbServerGenerationIssuer:
 class AdbServerRequest:
     """Request an ADB server at a specific TCP address."""
 
-    server_address: TcpAddress
+    server_address: TcpEndpoint
 
 
 @dataclass(frozen=True, slots=True)
 class AdbServerCapability:
     """Describe the TCP address provided by an active ADB server lifecycle."""
 
-    server_address: TcpAddress
+    server_address: TcpEndpoint
 
 
-AdbServerPhase: TypeAlias = ManagedPhase
+AdbServerPhase: TypeAlias = LifecyclePhase
 
 
-AdbServerSnapshot: TypeAlias = ManagedSnapshot[
+AdbServerSnapshot: TypeAlias = LifecycleSnapshot[
     AdbServerGeneration,
     AdbServerRequest,
     AdbServerCapability,

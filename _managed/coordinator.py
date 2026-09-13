@@ -6,13 +6,13 @@ from typing import Generic, TypeVar
 
 from _capability.projection import CapabilityProjector
 from _managed.result import (
-    AcquireExisting,
+    AcquireAlreadyActive,
     AcquireFailed,
     AcquireReleaseRequired,
     AcquireRequestMismatch,
     AcquireResult,
     AcquireSucceeded,
-    Busy,
+    LifecycleBusy,
     GenerationMismatch,
     ReleaseAlreadyIdle,
     ReleaseFailed,
@@ -20,13 +20,13 @@ from _managed.result import (
     ReleaseResult,
     ReleaseSucceeded,
 )
-from _managed.snapshot import ManagedPhase, ManagedSnapshot
+from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
 from _managed.state import (
     Acquiring,
     Active,
     Idle,
-    ManagedState,
-    ReleasePending,
+    LifecycleState,
+    ReleaseRequired,
     Releasing,
 )
 from _resource.contract import ResourceProvider
@@ -41,39 +41,39 @@ CapabilityT = TypeVar("CapabilityT")
 
 
 def _snapshot_from_state(
-    state: ManagedState[GenerationT, RequestT, PhysicalResourceT, CapabilityT],
-) -> ManagedSnapshot[GenerationT, RequestT, CapabilityT]:
+    state: LifecycleState[GenerationT, RequestT, PhysicalResourceT, CapabilityT],
+) -> LifecycleSnapshot[GenerationT, RequestT, CapabilityT]:
     """Project one internal lifecycle state into its public snapshot."""
 
     if isinstance(state, Idle):
-        return ManagedSnapshot(state.generation)
+        return LifecycleSnapshot(state.generation)
     if isinstance(state, Active):
-        return ManagedSnapshot(
+        return LifecycleSnapshot(
             state.generation,
             state.request,
             state.capability,
-            phase=ManagedPhase.ACTIVE,
+            phase=LifecyclePhase.ACTIVE,
         )
     if isinstance(state, Acquiring):
-        return ManagedSnapshot(
+        return LifecycleSnapshot(
             state.generation,
             state.request,
-            phase=ManagedPhase.ACQUIRING,
+            phase=LifecyclePhase.ACQUIRING,
         )
     if isinstance(state, Releasing):
-        return ManagedSnapshot(
+        return LifecycleSnapshot(
             state.generation,
             state.request,
-            phase=ManagedPhase.RELEASING,
+            phase=LifecyclePhase.RELEASING,
         )
-    if isinstance(state, ReleasePending):
-        return ManagedSnapshot(
+    if isinstance(state, ReleaseRequired):
+        return LifecycleSnapshot(
             state.generation,
             state.request,
-            phase=ManagedPhase.RELEASE_PENDING,
+            phase=LifecyclePhase.RELEASE_REQUIRED,
             last_error=state.last_error,
         )
-    raise RuntimeError("unsupported Managed state")
+    raise RuntimeError("unsupported lifecycle state")
 
 
 def _normalize_resource_acquire_result(
@@ -112,17 +112,20 @@ def _normalize_resource_acquire_result(
     )
 
 
-class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
-    """Coordinate the synchronous lifecycle of one managed capability.
+class CapabilityLifecycleCoordinator(
+    Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
+):
+    """Coordinate the synchronous lifecycle of one capability.
 
     State changes use a short lock, while resource I/O, capability projection, cleanup,
     and generation issuance run outside it. Calls that observe one of those operations
-    return ``Busy`` immediately; ACQUIRING includes projection and RELEASING includes
+    return ``LifecycleBusy`` immediately; ACQUIRING includes projection and
+    RELEASING includes
     next-generation issuance.
 
     Once acquisition begins, any acquisition or projection failure enters
-    ``ReleasePending`` and requires an explicit ``release`` before the generation can
-    complete. A release failure also enters ``ReleasePending``. If physical cleanup has
+    ``ReleaseRequired`` and requires an explicit ``release`` before the generation can
+    complete. A release failure also enters ``ReleaseRequired``. If physical cleanup has
     already succeeded, a later generation-issuance failure retains no resources, so a
     retry does not clean them up twice. Non-``Exception`` interruptions are recorded in
     the same failure state before they are re-raised.
@@ -145,11 +148,11 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         generation = issue_generation()
         if generation is None:
             raise TypeError("issue_generation cannot return None")
-        self._state: ManagedState[
+        self._state: LifecycleState[
             GenerationT, RequestT, PhysicalResourceT, CapabilityT
         ] = Idle(generation)
 
-    def read(self) -> ManagedSnapshot[GenerationT, RequestT, CapabilityT]:
+    def read(self) -> LifecycleSnapshot[GenerationT, RequestT, CapabilityT]:
         """Return one consistent point-in-time snapshot of lifecycle state."""
 
         with self._lock:
@@ -172,18 +175,18 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             if expected_generation != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Acquiring):
-                return Busy(ManagedPhase.ACQUIRING)
+                return LifecycleBusy(LifecyclePhase.ACQUIRING)
             if isinstance(state, Releasing):
-                return Busy(ManagedPhase.RELEASING)
+                return LifecycleBusy(LifecyclePhase.RELEASING)
             if isinstance(state, Active):
                 snapshot = _snapshot_from_state(state)
                 if state.request == request:
-                    return AcquireExisting(snapshot)
+                    return AcquireAlreadyActive(snapshot)
                 return AcquireRequestMismatch(state.request)
-            if isinstance(state, ReleasePending):
+            if isinstance(state, ReleaseRequired):
                 return AcquireReleaseRequired(_snapshot_from_state(state))
             if not isinstance(state, Idle):
-                raise RuntimeError("unsupported Managed state")
+                raise RuntimeError("unsupported lifecycle state")
 
             generation = state.generation
             self._state = Acquiring(generation, request)
@@ -209,11 +212,11 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
                 generation, request, resources, exc
             )
 
-        snapshot = ManagedSnapshot(
+        snapshot = LifecycleSnapshot(
             generation,
             request,
             capability,
-            phase=ManagedPhase.ACTIVE,
+            phase=LifecyclePhase.ACTIVE,
         )
         with self._lock:
             self._state = Active(generation, request, capability, resources)
@@ -236,13 +239,13 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             if expected_generation != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Acquiring):
-                return Busy(ManagedPhase.ACQUIRING)
+                return LifecycleBusy(LifecyclePhase.ACQUIRING)
             if isinstance(state, Releasing):
-                return Busy(ManagedPhase.RELEASING)
+                return LifecycleBusy(LifecyclePhase.RELEASING)
             if isinstance(state, Idle):
                 return ReleaseAlreadyIdle()
-            if not isinstance(state, (Active, ReleasePending)):
-                raise RuntimeError("unsupported Managed state")
+            if not isinstance(state, (Active, ReleaseRequired)):
+                raise RuntimeError("unsupported lifecycle state")
             if state.request != request:
                 return ReleaseRequestMismatch(state.request)
 
@@ -277,7 +280,7 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             raise RuntimeError("issue_generation must return a fresh generation")
         return next_generation
 
-    def _finish_failed_acquire(
+    def _record_acquire_failure(
         self,
         generation: GenerationT,
         request: RequestT,
@@ -285,7 +288,7 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         error: BaseException,
     ) -> AcquireFailed[GenerationT, RequestT, CapabilityT]:
         with self._lock:
-            state = ReleasePending(generation, request, resources, error)
+            state = ReleaseRequired(generation, request, resources, error)
             self._state = state
             snapshot = _snapshot_from_state(state)
         return AcquireFailed(snapshot)
@@ -297,12 +300,12 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         resources: PhysicalResources[PhysicalResourceT],
         error: BaseException,
     ) -> AcquireFailed[GenerationT, RequestT, CapabilityT]:
-        result = self._finish_failed_acquire(generation, request, resources, error)
+        result = self._record_acquire_failure(generation, request, resources, error)
         if not isinstance(error, Exception):
             raise error
         return result
 
-    def _finish_failed_release(
+    def _record_release_failure(
         self,
         generation: GenerationT,
         request: RequestT,
@@ -310,7 +313,7 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         error: BaseException,
     ) -> ReleaseFailed[GenerationT, RequestT, CapabilityT]:
         with self._lock:
-            state = ReleasePending(generation, request, resources, error)
+            state = ReleaseRequired(generation, request, resources, error)
             self._state = state
             snapshot = _snapshot_from_state(state)
         return ReleaseFailed(snapshot)
@@ -322,10 +325,10 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         resources: PhysicalResources[PhysicalResourceT],
         error: BaseException,
     ) -> ReleaseFailed[GenerationT, RequestT, CapabilityT]:
-        result = self._finish_failed_release(generation, request, resources, error)
+        result = self._record_release_failure(generation, request, resources, error)
         if not isinstance(error, Exception):
             raise error
         return result
 
 
-__all__ = ["ManagedCoordinator"]
+__all__ = ["CapabilityLifecycleCoordinator"]

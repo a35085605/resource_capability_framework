@@ -16,7 +16,7 @@ def _normalize_required_text(value: object, *, field_name: str) -> str:
 
 @total_ordering
 @dataclass(frozen=True, slots=True, eq=False)
-class TcpAddress:
+class TcpEndpoint:
     """Represent a validated TCP host and port endpoint.
 
     ``host`` is stripped of leading and trailing whitespace and must remain non-empty.
@@ -40,12 +40,12 @@ class TcpAddress:
         return self.host, self.port
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, TcpAddress):
+        if not isinstance(other, TcpEndpoint):
             return NotImplemented
         return self._comparison_key() == other._comparison_key()
 
     def __lt__(self, other: object) -> bool:
-        if not isinstance(other, TcpAddress):
+        if not isinstance(other, TcpEndpoint):
             return NotImplemented
         return self._comparison_key() < other._comparison_key()
 
@@ -53,4 +53,4 @@ class TcpAddress:
         return hash(self._comparison_key())
 
 
-__all__ = ["TcpAddress"]
+__all__ = ["TcpEndpoint"]

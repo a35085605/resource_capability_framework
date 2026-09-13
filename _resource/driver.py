@@ -11,14 +11,14 @@ type PhysicalResources[T] = tuple[T, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicalAcquireSucceeded(Generic[PhysicalResourceT]):
+class RequirementAcquireSucceeded(Generic[PhysicalResourceT]):
     """Report successful acquisition for one physical-resource requirement."""
 
     resources: PhysicalResources[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicalAcquireFailed(Generic[PhysicalResourceT]):
+class RequirementAcquireFailed(Generic[PhysicalResourceT]):
     """Report terminal acquisition failure for one requirement.
 
     ``resources`` contains every physical resource created for the requirement before
@@ -29,7 +29,7 @@ class PhysicalAcquireFailed(Generic[PhysicalResourceT]):
     resources: PhysicalResources[PhysicalResourceT]
 
 
-type PhysicalAcquireResult[T] = PhysicalAcquireSucceeded[T] | PhysicalAcquireFailed[T]
+type RequirementAcquireResult[T] = RequirementAcquireSucceeded[T] | RequirementAcquireFailed[T]
 
 
 class ResourceDriver(Protocol[RequirementT, PhysicalResourceT]):
@@ -44,15 +44,15 @@ class ResourceDriver(Protocol[RequirementT, PhysicalResourceT]):
     def acquire(
         self,
         requirement: RequirementT,
-    ) -> PhysicalAcquireResult[PhysicalResourceT]: ...
+    ) -> RequirementAcquireResult[PhysicalResourceT]: ...
 
     def cleanup(self, resources: PhysicalResources[PhysicalResourceT]) -> None: ...
 
 
 __all__ = [
-    "PhysicalAcquireFailed",
-    "PhysicalAcquireResult",
-    "PhysicalAcquireSucceeded",
+    "RequirementAcquireFailed",
+    "RequirementAcquireResult",
+    "RequirementAcquireSucceeded",
     "PhysicalResources",
     "ResourceDriver",
 ]

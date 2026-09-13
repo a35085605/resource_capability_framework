@@ -47,7 +47,7 @@ class Releasing(Generic[GenerationT, RequestT, PhysicalResourceT]):
 
 
 @dataclass(frozen=True, slots=True)
-class ReleasePending(Generic[GenerationT, RequestT, PhysicalResourceT]):
+class ReleaseRequired(Generic[GenerationT, RequestT, PhysicalResourceT]):
     """Internal state for a generation that still requires successful release.
 
     ``resources`` may already be empty when physical cleanup succeeded but issuing the
@@ -60,12 +60,12 @@ class ReleasePending(Generic[GenerationT, RequestT, PhysicalResourceT]):
     last_error: BaseException
 
 
-ManagedState: TypeAlias = (
+LifecycleState: TypeAlias = (
     Idle[GenerationT]
     | Acquiring[GenerationT, RequestT]
     | Active[GenerationT, RequestT, PhysicalResourceT, CapabilityT]
     | Releasing[GenerationT, RequestT, PhysicalResourceT]
-    | ReleasePending[GenerationT, RequestT, PhysicalResourceT]
+    | ReleaseRequired[GenerationT, RequestT, PhysicalResourceT]
 )
 
 
@@ -73,7 +73,7 @@ __all__ = [
     "Acquiring",
     "Active",
     "Idle",
-    "ManagedState",
-    "ReleasePending",
+    "LifecycleState",
+    "ReleaseRequired",
     "Releasing",
 ]

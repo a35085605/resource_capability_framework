@@ -4,8 +4,8 @@ from typing import Generic, TypeVar
 
 from _resource.contract import ResourceProvider, ResourceRequirementsResolver
 from _resource.driver import (
-    PhysicalAcquireFailed,
-    PhysicalAcquireSucceeded,
+    RequirementAcquireFailed,
+    RequirementAcquireSucceeded,
     PhysicalResources,
     ResourceDriver,
 )
@@ -21,7 +21,7 @@ RequirementT = TypeVar("RequirementT")
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
-class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
+class ResolvedResourceProvider(Generic[RequestT, RequirementT, PhysicalResourceT]):
     """Acquire resolved requirements in order and release their physical resources.
 
     Acquisition stops at the first failure and returns every resource reported by
@@ -73,9 +73,9 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
             except BaseException as exc:
                 return ResourceAcquireFailed(exc, resources)
 
-            if not isinstance(outcome, (PhysicalAcquireSucceeded, PhysicalAcquireFailed)):
+            if not isinstance(outcome, (RequirementAcquireSucceeded, RequirementAcquireFailed)):
                 return ResourceAcquireFailed(
-                    TypeError("ResourceDriver.acquire() must return a PhysicalAcquireResult"),
+                    TypeError("ResourceDriver.acquire() must return a RequirementAcquireResult"),
                     resources,
                 )
             if not isinstance(outcome.resources, tuple):
@@ -85,10 +85,10 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
                 )
 
             resources += outcome.resources
-            if isinstance(outcome, PhysicalAcquireFailed):
+            if isinstance(outcome, RequirementAcquireFailed):
                 if not isinstance(outcome.error, Exception):
                     return ResourceAcquireFailed(
-                        TypeError("PhysicalAcquireFailed.error must be an Exception"),
+                        TypeError("RequirementAcquireFailed.error must be an Exception"),
                         resources,
                     )
                 return ResourceAcquireFailed(outcome.error, resources)
@@ -104,4 +104,4 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
             self._driver.cleanup(resources)
 
 
-__all__ = ["ResourceManager", "ResourceProvider", "ResourceRequirementsResolver"]
+__all__ = ["ResolvedResourceProvider", "ResourceProvider", "ResourceRequirementsResolver"]

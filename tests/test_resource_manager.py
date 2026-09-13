@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from _resource.driver import PhysicalAcquireFailed, PhysicalAcquireSucceeded
-from _resource.manager import ResourceManager
+from _resource.driver import RequirementAcquireFailed, RequirementAcquireSucceeded
+from _resource.manager import ResolvedResourceProvider
 from _resource.result import ResourceAcquireFailed
 
 
@@ -21,18 +21,18 @@ class RequirementsResolver:
 class PartialFailureDriver:
     def acquire(self, requirement: Requirement):
         if requirement.name == "first":
-            return PhysicalAcquireSucceeded(("r1",))
-        return PhysicalAcquireFailed(RuntimeError("second failed"), ("r2-partial",))
+            return RequirementAcquireSucceeded(("r1",))
+        return RequirementAcquireFailed(RuntimeError("second failed"), ("r2-partial",))
 
     def cleanup(self, resources: tuple[str, ...]) -> None:
         raise AssertionError("acquire must not roll back resources")
 
 
-class ResourceManagerTests(unittest.TestCase):
+class ResolvedResourceProviderTests(unittest.TestCase):
     def test_partial_failure_contains_prior_and_current_partial_resources(self) -> None:
-        manager = ResourceManager(RequirementsResolver(), PartialFailureDriver())
+        provider = ResolvedResourceProvider(RequirementsResolver(), PartialFailureDriver())
 
-        result = manager.acquire("request-a")
+        result = provider.acquire("request-a")
 
         self.assertIsInstance(result, ResourceAcquireFailed)
         self.assertEqual(result.resources, ("r1", "r2-partial"))

@@ -2,9 +2,9 @@
 
 from _resource.contract import ResourceProvider, ResourceRequirementsResolver
 from _resource.driver import (
-    PhysicalAcquireFailed,
-    PhysicalAcquireResult,
-    PhysicalAcquireSucceeded,
+    RequirementAcquireFailed,
+    RequirementAcquireResult,
+    RequirementAcquireSucceeded,
     PhysicalResources,
     ResourceDriver,
 )
@@ -16,9 +16,9 @@ from _resource.result import (
 
 
 __all__ = [
-    "PhysicalAcquireFailed",
-    "PhysicalAcquireResult",
-    "PhysicalAcquireSucceeded",
+    "RequirementAcquireFailed",
+    "RequirementAcquireResult",
+    "RequirementAcquireSucceeded",
     "PhysicalResources",
     "ResourceAcquireFailed",
     "ResourceAcquireResult",

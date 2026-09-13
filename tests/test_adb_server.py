@@ -4,16 +4,16 @@ import subprocess
 import sys
 import unittest
 
-from _managed.snapshot import ManagedPhase
+from _managed.snapshot import LifecyclePhase
 from api.adb_server import AdbServerPhase
 
 
 class AdbServerApiTests(unittest.TestCase):
-    def test_adb_server_phase_is_managed_phase_alias(self) -> None:
-        self.assertIs(AdbServerPhase, ManagedPhase)
-        self.assertIs(AdbServerPhase.ACTIVE, ManagedPhase.ACTIVE)
+    def test_adb_server_phase_is_lifecycle_phase_alias(self) -> None:
+        self.assertIs(AdbServerPhase, LifecyclePhase)
+        self.assertIs(AdbServerPhase.ACTIVE, LifecyclePhase.ACTIVE)
         self.assertEqual(AdbServerPhase.ACTIVE.value, "active")
-        self.assertEqual(AdbServerPhase.RELEASE_PENDING.value, "release_pending")
+        self.assertEqual(AdbServerPhase.RELEASE_REQUIRED.value, "release_required")
 
     def test_importing_adb_api_does_not_load_implementation_modules(self) -> None:
         completed = subprocess.run(

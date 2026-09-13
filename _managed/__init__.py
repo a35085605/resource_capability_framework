@@ -1,13 +1,13 @@
-"""Public contracts and result models for managed capability lifecycles."""
+"""Public contracts and result models for capability lifecycles."""
 
 from _managed.result import (
-    AcquireExisting,
+    AcquireAlreadyActive,
     AcquireFailed,
     AcquireReleaseRequired,
     AcquireRequestMismatch,
     AcquireResult,
     AcquireSucceeded,
-    Busy,
+    LifecycleBusy,
     GenerationMismatch,
     ReleaseAlreadyIdle,
     ReleaseFailed,
@@ -15,20 +15,20 @@ from _managed.result import (
     ReleaseResult,
     ReleaseSucceeded,
 )
-from _managed.snapshot import ManagedPhase, ManagedSnapshot
+from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
 
 
 __all__ = [
-    "AcquireExisting",
+    "AcquireAlreadyActive",
     "AcquireFailed",
     "AcquireReleaseRequired",
     "AcquireRequestMismatch",
     "AcquireResult",
     "AcquireSucceeded",
-    "Busy",
+    "LifecycleBusy",
     "GenerationMismatch",
-    "ManagedPhase",
-    "ManagedSnapshot",
+    "LifecyclePhase",
+    "LifecycleSnapshot",
     "ReleaseAlreadyIdle",
     "ReleaseFailed",
     "ReleaseRequestMismatch",
