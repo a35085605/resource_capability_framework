@@ -167,6 +167,40 @@ class ManagedCoordinatorTests(unittest.TestCase):
         self.assertIsInstance(released, ReleaseSucceeded)
         self.assertEqual(provider.released, [("r1", "r2")])
 
+    def test_invalid_provider_error_preserves_valid_reported_resources(self) -> None:
+        provider = StubResourceProvider(
+            acquire=lambda request: ResourceAcquireFailed("invalid error", ("r1",))
+        )
+        coordinator = self.make_coordinator(provider=provider)
+        generation = coordinator.read().generation
+
+        failed = coordinator.acquire(generation, "request-a")
+
+        self.assertIsInstance(failed, AcquireFailed)
+        self.assertIsInstance(failed.snapshot.last_error, TypeError)
+        released = coordinator.release(generation, "request-a")
+        self.assertIsInstance(released, ReleaseSucceeded)
+        self.assertEqual(provider.released, [("r1",)])
+
+    def test_invalid_provider_resources_do_not_enter_lifecycle_state(self) -> None:
+        provider = StubResourceProvider(
+            acquire=lambda request: ResourceAcquireFailed(
+                "invalid error",
+                ["not-a-physical-resources-tuple"],
+            )
+        )
+        coordinator = self.make_coordinator(provider=provider)
+        generation = coordinator.read().generation
+
+        failed = coordinator.acquire(generation, "request-a")
+
+        self.assertIsInstance(failed, AcquireFailed)
+        self.assertIsInstance(failed.snapshot.last_error, TypeError)
+        self.assertIn("resources", str(failed.snapshot.last_error))
+        released = coordinator.release(generation, "request-a")
+        self.assertIsInstance(released, ReleaseSucceeded)
+        self.assertEqual(provider.released, [])
+
     def test_release_cleanup_failure_preserves_generation_and_can_retry(self) -> None:
         attempts = 0
 

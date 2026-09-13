@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, TypeVar
 
+from _resource.contract import ResourceProvider, ResourceRequirementsResolver
 from _resource.driver import (
     PhysicalAcquireFailed,
     PhysicalAcquireSucceeded,
@@ -18,20 +19,6 @@ from _resource.result import (
 RequestT = TypeVar("RequestT")
 RequirementT = TypeVar("RequirementT")
 PhysicalResourceT = TypeVar("PhysicalResourceT")
-
-
-class ResourceRequirementsResolver(Protocol[RequestT, RequirementT]):
-    """Resolve the ordered physical-resource requirements for one request."""
-
-    def resolve(self, request: RequestT) -> tuple[RequirementT, ...]: ...
-
-
-class ResourceProvider(Protocol[RequestT, PhysicalResourceT]):
-    """Provide synchronous request-level physical-resource acquisition and release."""
-
-    def acquire(self, request: RequestT) -> ResourceAcquireResult[PhysicalResourceT]: ...
-
-    def release(self, resources: PhysicalResources[PhysicalResourceT]) -> None: ...
 
 
 class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
@@ -117,8 +104,4 @@ class ResourceManager(Generic[RequestT, RequirementT, PhysicalResourceT]):
             self._driver.cleanup(resources)
 
 
-__all__ = [
-    "ResourceManager",
-    "ResourceProvider",
-    "ResourceRequirementsResolver",
-]
+__all__ = ["ResourceManager", "ResourceProvider", "ResourceRequirementsResolver"]

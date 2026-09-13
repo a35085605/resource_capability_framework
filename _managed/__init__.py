@@ -1,6 +1,5 @@
-"""Managed request and capability lifecycle primitives."""
+"""Public contracts and result models for managed capability lifecycles."""
 
-from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
     AcquireExisting,
     AcquireFailed,
@@ -17,14 +16,6 @@ from _managed.result import (
     ReleaseSucceeded,
 )
 from _managed.snapshot import ManagedPhase, ManagedSnapshot
-from _managed.state import (
-    Acquiring,
-    Active,
-    Idle,
-    ManagedState,
-    ReleasePending,
-    Releasing,
-)
 
 
 __all__ = [
@@ -34,20 +25,13 @@ __all__ = [
     "AcquireRequestMismatch",
     "AcquireResult",
     "AcquireSucceeded",
-    "Acquiring",
-    "Active",
     "Busy",
     "GenerationMismatch",
-    "Idle",
-    "ManagedCoordinator",
     "ManagedPhase",
     "ManagedSnapshot",
-    "ManagedState",
     "ReleaseAlreadyIdle",
     "ReleaseFailed",
-    "ReleasePending",
     "ReleaseRequestMismatch",
     "ReleaseResult",
     "ReleaseSucceeded",
-    "Releasing",
 ]

@@ -1,16 +1,12 @@
-"""Synchronous physical-resource acquisition and release primitives."""
+"""Contracts and result models for synchronous physical-resource management."""
 
+from _resource.contract import ResourceProvider, ResourceRequirementsResolver
 from _resource.driver import (
     PhysicalAcquireFailed,
     PhysicalAcquireResult,
     PhysicalAcquireSucceeded,
     PhysicalResources,
     ResourceDriver,
-)
-from _resource.manager import (
-    ResourceManager,
-    ResourceProvider,
-    ResourceRequirementsResolver,
 )
 from _resource.result import (
     ResourceAcquireFailed,
@@ -28,7 +24,6 @@ __all__ = [
     "ResourceAcquireResult",
     "ResourceAcquireSucceeded",
     "ResourceDriver",
-    "ResourceManager",
     "ResourceProvider",
     "ResourceRequirementsResolver",
 ]

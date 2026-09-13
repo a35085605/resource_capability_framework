@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 import unittest
 
 from _managed.snapshot import ManagedPhase
@@ -12,6 +14,22 @@ class AdbServerApiTests(unittest.TestCase):
         self.assertIs(AdbServerPhase.ACTIVE, ManagedPhase.ACTIVE)
         self.assertEqual(AdbServerPhase.ACTIVE.value, "active")
         self.assertEqual(AdbServerPhase.RELEASE_PENDING.value, "release_pending")
+
+    def test_importing_adb_api_does_not_load_implementation_modules(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import api.adb_server; "
+                    "forbidden = {'_managed.coordinator', '_resource.manager'}; "
+                    "raise SystemExit(bool(forbidden.intersection(sys.modules)))"
+                ),
+            ],
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0)
 
 
 if __name__ == "__main__":

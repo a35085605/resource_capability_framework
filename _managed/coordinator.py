@@ -29,8 +29,8 @@ from _managed.state import (
     ReleasePending,
     Releasing,
 )
+from _resource.contract import ResourceProvider
 from _resource.driver import PhysicalResources
-from _resource.manager import ResourceProvider
 from _resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
 
 
@@ -38,6 +38,78 @@ GenerationT = TypeVar("GenerationT")
 RequestT = TypeVar("RequestT")
 PhysicalResourceT = TypeVar("PhysicalResourceT")
 CapabilityT = TypeVar("CapabilityT")
+
+
+def _snapshot_from_state(
+    state: ManagedState[GenerationT, RequestT, PhysicalResourceT, CapabilityT],
+) -> ManagedSnapshot[GenerationT, RequestT, CapabilityT]:
+    """Project one internal lifecycle state into its public snapshot."""
+
+    if isinstance(state, Idle):
+        return ManagedSnapshot(state.generation)
+    if isinstance(state, Active):
+        return ManagedSnapshot(
+            state.generation,
+            state.request,
+            state.capability,
+            phase=ManagedPhase.ACTIVE,
+        )
+    if isinstance(state, Acquiring):
+        return ManagedSnapshot(
+            state.generation,
+            state.request,
+            phase=ManagedPhase.ACQUIRING,
+        )
+    if isinstance(state, Releasing):
+        return ManagedSnapshot(
+            state.generation,
+            state.request,
+            phase=ManagedPhase.RELEASING,
+        )
+    if isinstance(state, ReleasePending):
+        return ManagedSnapshot(
+            state.generation,
+            state.request,
+            phase=ManagedPhase.RELEASE_PENDING,
+            last_error=state.last_error,
+        )
+    raise RuntimeError("unsupported Managed state")
+
+
+def _normalize_resource_acquire_result(
+    result: object,
+) -> ResourceAcquireSucceeded[PhysicalResourceT] | ResourceAcquireFailed[PhysicalResourceT]:
+    """Validate a provider result without allowing invalid resources into lifecycle state."""
+
+    if isinstance(result, ResourceAcquireFailed):
+        if not isinstance(result.resources, tuple):
+            return ResourceAcquireFailed(
+                TypeError(
+                    "ResourceAcquireFailed.resources must be a PhysicalResources tuple"
+                ),
+                (),
+            )
+        if not isinstance(result.error, BaseException):
+            return ResourceAcquireFailed(
+                TypeError("ResourceAcquireFailed.error must be a BaseException"),
+                result.resources,
+            )
+        return result
+
+    if isinstance(result, ResourceAcquireSucceeded):
+        if not isinstance(result.resources, tuple):
+            return ResourceAcquireFailed(
+                TypeError(
+                    "ResourceAcquireSucceeded.resources must be a PhysicalResources tuple"
+                ),
+                (),
+            )
+        return result
+
+    return ResourceAcquireFailed(
+        TypeError("ResourceProvider.acquire() must return a ResourceAcquireResult"),
+        (),
+    )
 
 
 class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
@@ -81,7 +153,7 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         """Return one consistent point-in-time snapshot of lifecycle state."""
 
         with self._lock:
-            return self._snapshot_locked()
+            return _snapshot_from_state(self._state)
 
     def acquire(
         self,
@@ -104,12 +176,12 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             if isinstance(state, Releasing):
                 return Busy(ManagedPhase.RELEASING)
             if isinstance(state, Active):
-                snapshot = self._snapshot_locked()
+                snapshot = _snapshot_from_state(state)
                 if state.request == request:
                     return AcquireExisting(snapshot)
                 return AcquireRequestMismatch(state.request)
             if isinstance(state, ReleasePending):
-                return AcquireReleaseRequired(self._snapshot_locked())
+                return AcquireReleaseRequired(_snapshot_from_state(state))
             if not isinstance(state, Idle):
                 raise RuntimeError("unsupported Managed state")
 
@@ -121,38 +193,10 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         except BaseException as exc:
             return self._fail_acquire_or_reraise(generation, request, (), exc)
 
+        result = _normalize_resource_acquire_result(result)
         if isinstance(result, ResourceAcquireFailed):
-            if not isinstance(result.error, BaseException):
-                error = TypeError("ResourceAcquireFailed.error must be a BaseException")
-                return self._finish_failed_acquire(
-                    generation, request, result.resources, error
-                )
-            if not isinstance(result.resources, tuple):
-                error = TypeError(
-                    "ResourceAcquireFailed.resources must be a PhysicalResources tuple"
-                )
-                return self._finish_failed_acquire(generation, request, (), error)
             return self._fail_acquire_or_reraise(
                 generation, request, result.resources, result.error
-            )
-
-        if not isinstance(result, ResourceAcquireSucceeded):
-            return self._finish_failed_acquire(
-                generation,
-                request,
-                (),
-                TypeError(
-                    "ResourceProvider.acquire() must return a ResourceAcquireResult"
-                ),
-            )
-        if not isinstance(result.resources, tuple):
-            return self._finish_failed_acquire(
-                generation,
-                request,
-                (),
-                TypeError(
-                    "ResourceAcquireSucceeded.resources must be a PhysicalResources tuple"
-                ),
             )
 
         resources = result.resources
@@ -225,38 +269,6 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
             self._state = Idle(next_generation)
         return ReleaseSucceeded(next_generation)
 
-    def _snapshot_locked(self) -> ManagedSnapshot[GenerationT, RequestT, CapabilityT]:
-        state = self._state
-        if isinstance(state, Idle):
-            return ManagedSnapshot(state.generation)
-        if isinstance(state, Active):
-            return ManagedSnapshot(
-                state.generation,
-                state.request,
-                state.capability,
-                phase=ManagedPhase.ACTIVE,
-            )
-        if isinstance(state, Acquiring):
-            return ManagedSnapshot(
-                state.generation,
-                state.request,
-                phase=ManagedPhase.ACQUIRING,
-            )
-        if isinstance(state, Releasing):
-            return ManagedSnapshot(
-                state.generation,
-                state.request,
-                phase=ManagedPhase.RELEASING,
-            )
-        if isinstance(state, ReleasePending):
-            return ManagedSnapshot(
-                state.generation,
-                state.request,
-                phase=ManagedPhase.RELEASE_PENDING,
-                last_error=state.last_error,
-            )
-        raise RuntimeError("unsupported Managed state")
-
     def _issue_next_generation(self, previous_generation: GenerationT) -> GenerationT:
         next_generation = self._issue_generation()
         if next_generation is None:
@@ -273,8 +285,9 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         error: BaseException,
     ) -> AcquireFailed[GenerationT, RequestT, CapabilityT]:
         with self._lock:
-            self._state = ReleasePending(generation, request, resources, error)
-            snapshot = self._snapshot_locked()
+            state = ReleasePending(generation, request, resources, error)
+            self._state = state
+            snapshot = _snapshot_from_state(state)
         return AcquireFailed(snapshot)
 
     def _fail_acquire_or_reraise(
@@ -297,8 +310,9 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
         error: BaseException,
     ) -> ReleaseFailed[GenerationT, RequestT, CapabilityT]:
         with self._lock:
-            self._state = ReleasePending(generation, request, resources, error)
-            snapshot = self._snapshot_locked()
+            state = ReleasePending(generation, request, resources, error)
+            self._state = state
+            snapshot = _snapshot_from_state(state)
         return ReleaseFailed(snapshot)
 
     def _fail_release_or_reraise(
