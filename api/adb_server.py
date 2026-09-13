@@ -1,9 +1,8 @@
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import  Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, TypeAlias, runtime_checkable
 
 from _managed.result import AcquireResult, ReleaseResult
-from _managed.snapshot import Snapshot
+from _managed.snapshot import ManagedPhase, Snapshot
 from api.epoch import Epoch, EpochSequence
 from api.networking_address import TcpAddress
 
@@ -51,12 +50,7 @@ class AdbServerCapability:
     server_address: TcpAddress
 
 
-class AdbServerPhase(Enum):
-    IDLE = "idle"
-    ACQUIRING = "acquiring"
-    CURRENT = "current"
-    RELEASING = "releasing"
-    CLEANUP_PENDING = "cleanup_pending"
+AdbServerPhase: TypeAlias = ManagedPhase
 
 
 AdbServerState: TypeAlias = Snapshot[

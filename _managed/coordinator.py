@@ -82,19 +82,19 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
 
     def acquire(
         self,
-        expected: GenerationT,
+        expected_generation: GenerationT,
         request: RequestT,
     ) -> AcquireResult[GenerationT, RequestT, CapabilityT]:
         """Begin acquisition if idle; otherwise return the current lifecycle condition."""
 
-        if expected is None:
-            raise TypeError("expected cannot be None")
+        if expected_generation is None:
+            raise TypeError("expected_generation cannot be None")
         if request is None:
             raise TypeError("request cannot be None")
 
         with self._lock:
             state = self._state
-            if expected != state.generation:
+            if expected_generation != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Acquiring):
                 return Busy(ManagedPhase.ACQUIRING)
@@ -168,19 +168,19 @@ class ManagedCoordinator(Generic[GenerationT, RequestT, PhysicalResourceT, Capab
 
     def release(
         self,
-        expected: GenerationT,
+        expected_generation: GenerationT,
         request: RequestT,
     ) -> ReleaseResult[GenerationT, RequestT, CapabilityT]:
         """Release the current lifecycle without waiting for another operation."""
 
-        if expected is None:
-            raise TypeError("expected cannot be None")
+        if expected_generation is None:
+            raise TypeError("expected_generation cannot be None")
         if request is None:
             raise TypeError("request cannot be None")
 
         with self._lock:
             state = self._state
-            if expected != state.generation:
+            if expected_generation != state.generation:
                 return GenerationMismatch(state.generation)
             if isinstance(state, Acquiring):
                 return Busy(ManagedPhase.ACQUIRING)
