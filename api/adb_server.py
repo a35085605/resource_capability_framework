@@ -1,20 +1,19 @@
-
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable, TypeAlias
+from enum import Enum
+from typing import  Protocol, TypeAlias, runtime_checkable
+
+from _managed.result import AcquireResult, ReleaseResult
 from _managed.snapshot import Snapshot
 from api.epoch import Epoch, EpochSequence
 from api.networking_address import TcpAddress
 
 
-
 class _AdbServerGenerationEpoch(Epoch):
-
     __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)
 class AdbServerGeneration:
-
     _epoch: _AdbServerGenerationEpoch = field(repr=False)
 
     def __post_init__(self) -> None:
@@ -26,7 +25,6 @@ class AdbServerGeneration:
 
 
 class AdbServerGenerationIssuer:
-
     __slots__ = ("_sequence",)
 
     def __init__(self, *, after: AdbServerGeneration | None = None) -> None:
@@ -47,10 +45,38 @@ class AdbServerRequest:
     server_address: TcpAddress
 
 
+@dataclass(frozen=True, slots=True)
+class AdbServerCapability:
+
+    server_address: TcpAddress
+
+
+class AdbServerPhase(Enum):
+    IDLE = "idle"
+    ACQUIRING = "acquiring"
+    CURRENT = "current"
+    RELEASING = "releasing"
+    CLEANUP_PENDING = "cleanup_pending"
+
+
 AdbServerState: TypeAlias = Snapshot[
     AdbServerGeneration,
     AdbServerRequest,
-    TcpAddress,
+    AdbServerCapability,
+]
+
+
+AdbServerAcquireResult: TypeAlias = AcquireResult[
+    AdbServerGeneration,
+    AdbServerRequest,
+    AdbServerCapability,
+]
+
+
+AdbServerReleaseResult: TypeAlias = ReleaseResult[
+    AdbServerGeneration,
+    AdbServerRequest,
+    AdbServerCapability,
 ]
 
 
@@ -64,20 +90,18 @@ class AdbServerStateView(Protocol):
 
 
 class AdbServerLifecycle(AdbServerStateView, Protocol):
-
     def acquire(
         self,
         expected_generation: AdbServerGeneration,
         request: AdbServerRequest,
-    ) -> ...:
-        ...
+    ) -> AdbServerAcquireResult: ...
 
     def release(
         self,
         expected_generation: AdbServerGeneration,
         request: AdbServerRequest,
-    ) -> ...:
-        ...
+    ) -> AdbServerReleaseResult: ...
+
 
 class AdbServerLifecycleFactory(Protocol):
     """Construct one runtime-scoped ADB server lifecycle."""
@@ -85,5 +109,4 @@ class AdbServerLifecycleFactory(Protocol):
     def __call__(
         self,
         generation_issuer: AdbServerGenerationIssuer,
-    ) -> AdbServerLifecycle:
-        ...
+    ) -> AdbServerLifecycle: ...

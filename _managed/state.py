@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _resource.manager import ResourceAttempt
+from _resource.driver import PhysicalResourceSet
 
 
 GenerationT = TypeVar("GenerationT")
@@ -28,23 +28,23 @@ class Current(Generic[GenerationT, RequestT, PhysicalResourceT, CapabilityT]):
     generation: GenerationT
     request: RequestT
     capability: CapabilityT
-    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
+    resources: PhysicalResourceSet[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
 class Releasing(Generic[GenerationT, RequestT, PhysicalResourceT]):
     generation: GenerationT
     request: RequestT
-    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
+    resources: PhysicalResourceSet[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
 class CleanupPending(Generic[GenerationT, RequestT, PhysicalResourceT]):
-    """Capability is unavailable and the failed release/rollback awaits retry."""
+    """Capability is unavailable and release must be retried for this generation."""
 
     generation: GenerationT
     request: RequestT
-    attempt: ResourceAttempt[RequestT, PhysicalResourceT]
+    resources: PhysicalResourceSet[PhysicalResourceT]
     last_error: BaseException
 
 

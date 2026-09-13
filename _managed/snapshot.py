@@ -25,11 +25,11 @@ class Snapshot(Generic[GenerationT, RequestT, CapabilityT]):
     """Point-in-time lifecycle observation; it does not lease Capability.
 
     ``request`` identifies the lifecycle in every phase except IDLE. Only CURRENT
-    exposes ``capability``; constructing that snapshot requires ``phase=CURRENT``.
-    ACQUIRING includes projection and any synchronous rollback before acquire exits.
-    RELEASING includes physical cleanup and generation advancement before release exits.
-    CLEANUP_PENDING retains the request and ``last_error`` for an explicit release retry,
-    including when physical cleanup succeeded but release finalization failed.
+    exposes ``capability``. ACQUIRING includes physical acquisition and projection.
+    RELEASING includes physical cleanup and generation advancement.
+    CLEANUP_PENDING retains the request and ``last_error`` until an explicit release
+    completes, including acquisition/projection failure, cleanup failure, or generation
+    advancement failure after cleanup has already succeeded.
 
     Observations can become stale immediately. Pass ``generation`` and ``request``
     back to the coordinator to validate an operation; reading is not a reservation.

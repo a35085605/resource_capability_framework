@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
-from _resource.policy import ResourcePolicy
+from typing import Protocol
 
 
-@runtime_checkable
 class ResourceRequirement(Protocol):
-    """Implementation-specific descriptor for one logical resource requirement.
+    """Implementation-specific descriptor for one physical resource requirement.
 
-    Concrete resource domains carry their acquisition inputs directly on the
-    requirement value. ``policy`` remains the only framework-defined field.
+    Concrete resource domains carry every acquisition input directly on the requirement
+    value. The framework imposes no policy or identity fields on requirements.
     """
-
-    @property
-    def policy(self) -> ResourcePolicy: ...
 
 
 type ResourceRequirements[T: ResourceRequirement] = tuple[T, ...]

@@ -1,17 +1,19 @@
 """Managed Request and capability coordination primitives."""
 
-from _attempt import AttemptId
 from _managed.coordinator import ManagedCoordinator
 from _managed.result import (
-    AcquireRequestMismatch,
-    AcquireBusy,
     AcquireCommitted,
     AcquireExisting,
+    AcquireFailed,
+    AcquireReleaseRequired,
+    AcquireRequestMismatch,
     AcquireResult,
+    Busy,
     GenerationMismatch,
-    ReleaseRequestMismatch,
     ReleaseDetached,
+    ReleaseFailed,
     ReleaseInactive,
+    ReleaseRequestMismatch,
     ReleaseResult,
 )
 from _managed.snapshot import ManagedPhase, Snapshot
@@ -23,17 +25,17 @@ from _managed.state import (
     ManagedState,
     Releasing,
 )
-from _resource.manager import ResourceCleanupPendingError
 
 
 __all__ = [
-    "AcquireRequestMismatch",
-    "AcquireBusy",
     "AcquireCommitted",
     "AcquireExisting",
+    "AcquireFailed",
+    "AcquireReleaseRequired",
+    "AcquireRequestMismatch",
     "AcquireResult",
     "Acquiring",
-    "AttemptId",
+    "Busy",
     "CleanupPending",
     "Current",
     "GenerationMismatch",
@@ -41,11 +43,11 @@ __all__ = [
     "ManagedCoordinator",
     "ManagedPhase",
     "ManagedState",
-    "ReleaseRequestMismatch",
     "ReleaseDetached",
+    "ReleaseFailed",
     "ReleaseInactive",
+    "ReleaseRequestMismatch",
     "ReleaseResult",
     "Releasing",
-    "ResourceCleanupPendingError",
     "Snapshot",
 ]

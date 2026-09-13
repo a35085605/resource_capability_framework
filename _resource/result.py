@@ -3,24 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-ValueT = TypeVar("ValueT")
+from _resource.driver import PhysicalResourceSet
+
+
+PhysicalResourceT = TypeVar("PhysicalResourceT")
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceReady(Generic[ValueT]):
-    value: ValueT
+class ResourceReady(Generic[PhysicalResourceT]):
+    """All requirements were acquired successfully."""
+
+    resources: PhysicalResourceSet[PhysicalResourceT]
 
 
 @dataclass(frozen=True, slots=True)
-class ResourceBlocked:
-    reason: str = "resource key conflict"
+class ResourceFailed(Generic[PhysicalResourceT]):
+    """Acquisition failed while retaining every resource obtained so far."""
+
+    error: BaseException
+    resources: PhysicalResourceSet[PhysicalResourceT]
 
 
-ResourceAcquireResult: TypeAlias = ResourceReady[ValueT] | ResourceBlocked
+ResourceAcquireResult: TypeAlias = (
+    ResourceReady[PhysicalResourceT] | ResourceFailed[PhysicalResourceT]
+)
 
 
 __all__ = [
     "ResourceAcquireResult",
-    "ResourceBlocked",
+    "ResourceFailed",
     "ResourceReady",
 ]
