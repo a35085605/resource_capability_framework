@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias, runtime_checkable
 
-from _managed.result import AcquireResult, ReleaseResult
-from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
+from _lifecycle.capability.result import AcquireResult, ReleaseResult
+from _lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
 from api.epoch import Epoch, EpochSequence
 from api.networking_address import TcpEndpoint
 

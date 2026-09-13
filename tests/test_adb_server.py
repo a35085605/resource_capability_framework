@@ -4,7 +4,7 @@ import subprocess
 import sys
 import unittest
 
-from _managed.snapshot import LifecyclePhase
+from _lifecycle.capability.snapshot import LifecyclePhase
 from api.adb_server import AdbServerPhase
 
 
@@ -22,7 +22,7 @@ class AdbServerApiTests(unittest.TestCase):
                 "-c",
                 (
                     "import sys; import api.adb_server; "
-                    "forbidden = {'_managed.coordinator', '_resource.manager'}; "
+                    "forbidden = {'_lifecycle.capability.coordinator', '_lifecycle.resource.manager'}; "
                     "raise SystemExit(bool(forbidden.intersection(sys.modules)))"
                 ),
             ],

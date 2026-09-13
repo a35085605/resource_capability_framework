@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from _resource.driver import PhysicalResources
+from _lifecycle.resource.driver import PhysicalResources
 
 
 PhysicalResourceT = TypeVar("PhysicalResourceT")

@@ -4,8 +4,8 @@ import unittest
 from collections.abc import Callable
 from threading import Event, Thread
 
-from _managed.coordinator import CapabilityLifecycleCoordinator
-from _managed.result import (
+from _lifecycle.capability.coordinator import CapabilityLifecycleCoordinator
+from _lifecycle.capability.result import (
     AcquireFailed,
     AcquireReleaseRequired,
     AcquireSucceeded,
@@ -13,8 +13,8 @@ from _managed.result import (
     ReleaseFailed,
     ReleaseSucceeded,
 )
-from _managed.snapshot import LifecyclePhase
-from _resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
+from _lifecycle.capability.snapshot import LifecyclePhase
+from _lifecycle.resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
 
 
 class LifecycleInterrupt(BaseException):

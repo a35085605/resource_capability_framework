@@ -1,6 +1,7 @@
-"""Public contracts and result models for capability lifecycles."""
+"""Contracts and result models for capability lifecycles."""
 
-from _managed.result import (
+from _lifecycle.capability.projection import CapabilityProjector
+from _lifecycle.capability.result import (
     AcquireAlreadyActive,
     AcquireFailed,
     AcquireReleaseRequired,
@@ -15,10 +16,11 @@ from _managed.result import (
     ReleaseResult,
     ReleaseSucceeded,
 )
-from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
+from _lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
 
 
 __all__ = [
+    "CapabilityProjector",
     "AcquireAlreadyActive",
     "AcquireFailed",
     "AcquireReleaseRequired",

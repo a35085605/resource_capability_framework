@@ -4,8 +4,8 @@ from collections.abc import Callable
 from threading import Lock
 from typing import Generic, TypeVar
 
-from _capability.projection import CapabilityProjector
-from _managed.result import (
+from _lifecycle.capability.projection import CapabilityProjector
+from _lifecycle.capability.result import (
     AcquireAlreadyActive,
     AcquireFailed,
     AcquireReleaseRequired,
@@ -20,8 +20,8 @@ from _managed.result import (
     ReleaseResult,
     ReleaseSucceeded,
 )
-from _managed.snapshot import LifecyclePhase, LifecycleSnapshot
-from _managed.state import (
+from _lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
+from _lifecycle.capability.state import (
     Acquiring,
     Active,
     Idle,
@@ -29,9 +29,9 @@ from _managed.state import (
     ReleaseRequired,
     Releasing,
 )
-from _resource.contract import ResourceProvider
-from _resource.driver import PhysicalResources
-from _resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
+from _lifecycle.resource.contract import ResourceProvider
+from _lifecycle.resource.driver import PhysicalResources
+from _lifecycle.resource.result import ResourceAcquireFailed, ResourceAcquireSucceeded
 
 
 GenerationT = TypeVar("GenerationT")
