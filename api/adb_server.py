@@ -1,10 +1,10 @@
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable, TypeAlias
-from _managed.snapshot import Snapshot
+from enum import Enum
+from typing import Protocol, runtime_checkable
+
 from api.epoch import Epoch, EpochSequence
 from api.networking_address import TcpAddress
-
 
 
 class _AdbServerGenerationEpoch(Epoch):
@@ -47,11 +47,26 @@ class AdbServerRequest:
     server_address: TcpAddress
 
 
-AdbServerState: TypeAlias = Snapshot[
-    AdbServerGeneration,
-    AdbServerRequest,
-    TcpAddress,
-]
+@dataclass(frozen=True, slots=True)
+class AdbServerCapability:
+
+    server_address: TcpAddress
+
+
+class AdbServerPhase(Enum):
+    IDLE = "idle"
+    ACQUIRING = "acquiring"
+    CURRENT = "current"
+    RELEASING = "releasing"
+    CLEANUP_PENDING = "cleanup_pending"
+
+
+@dataclass(frozen=True, slots=True)
+class AdbServerState:
+    generation: AdbServerGeneration
+    phase: AdbServerPhase
+    request: AdbServerRequest | None = None
+    capability: AdbServerCapability | None = None
 
 
 @runtime_checkable
@@ -69,14 +84,14 @@ class AdbServerLifecycle(AdbServerStateView, Protocol):
         self,
         expected_generation: AdbServerGeneration,
         request: AdbServerRequest,
-    ) -> ...:
+    ) -> AdbServerAcquireResult:
         ...
 
     def release(
         self,
         expected_generation: AdbServerGeneration,
         request: AdbServerRequest,
-    ) -> ...:
+    ) -> AdbServerReleaseResult:
         ...
 
 class AdbServerLifecycleFactory(Protocol):
