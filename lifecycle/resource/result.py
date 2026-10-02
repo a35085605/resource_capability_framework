@@ -34,6 +34,10 @@ class ReleaseReport:
         return ReleaseReport(tuple(errors), pooled_count)
 
 
+class ScopeClosedError(RuntimeError):
+    """An operation requires a scope whose entire ancestor chain is still open."""
+
+
 class ResourceAllocationError(RuntimeError):
     """An allocation failed after the resource layer completed controlled rollback."""
 
@@ -49,4 +53,4 @@ class ResourceAllocationError(RuntimeError):
         self.release_report = release_report
 
 
-__all__ = ["ReleaseReport", "ResourceAllocationError"]
+__all__ = ["ReleaseReport", "ResourceAllocationError", "ScopeClosedError"]

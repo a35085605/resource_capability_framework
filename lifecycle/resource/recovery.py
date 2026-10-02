@@ -25,6 +25,7 @@ class ResourceRecoveryPool:
 
     The pool deliberately exposes only immutable snapshots. It does not retry entries or
     schedule background work; adapters decide what a detached recovery action means.
+    Each action must remain valid after its former ancestor scopes have closed.
     """
 
     __slots__ = ("_entries", "_lock")

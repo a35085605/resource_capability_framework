@@ -6,6 +6,7 @@ from lifecycle.resource import (
     Resource,
     ResourceAllocationError,
     ResourceRecoveryPool,
+    ResourceScope,
 )
 
 
@@ -14,8 +15,49 @@ class ControlFlow(BaseException):
 
 
 class ResourceCompositionTests(unittest.TestCase):
-    def test_description_is_lazy_and_each_allocate_creates_a_fresh_instance(self) -> None:
+    def test_original_interruption_wins_over_cleanup_interruption(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        original = ControlFlow("acquire")
+        cleanup = ControlFlow("cleanup")
+
+        def interrupt(error: BaseException) -> None:
+            raise error
+
+        resource = Resource.make(lambda: "value", lambda _: interrupt(cleanup)).map(
+            lambda _: interrupt(original)
+        )
+        with self.assertRaises(ControlFlow) as raised:
+            scope.acquire(resource)
+        self.assertIs(raised.exception, original)
+        self.assertIs(pool.snapshot()[0].error, cleanup)
+        self.assertEqual(scope.close().pooled_count, 0)
+
+    def test_cleanup_interruption_wins_over_ordinary_acquire_error(self) -> None:
+        pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        original = ValueError("acquire")
+        cleanup = ControlFlow("cleanup")
+        events: list[str] = []
+
+        def interrupt(error: BaseException) -> None:
+            raise error
+
+        resource = Resource.make(lambda: "outer", events.append).flat_map(
+            lambda _: Resource.make(lambda: "inner", lambda _: interrupt(cleanup))
+        ).map(lambda _: interrupt(original))
+        with self.assertRaises(ControlFlow) as raised:
+            scope.acquire(resource)
+        self.assertIs(raised.exception, cleanup)
+        self.assertIs(raised.exception.__cause__, original)
+        self.assertEqual(events, ["outer"])
+        self.assertEqual(len(pool), 1)
+        scope.close()
+
+    def test_description_is_lazy_and_each_acquire_creates_a_fresh_instance(self) -> None:
+        pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[tuple[str, int]] = []
         next_id = 0
 
@@ -31,13 +73,15 @@ class ResourceCompositionTests(unittest.TestCase):
         resource = Resource.make(acquire, release)
         self.assertEqual(events, [])
 
-        first = resource.allocate(pool)
-        second = resource.allocate(pool)
-        self.assertIsNot(first.value, second.value)
+        first_scope = scope.child()
+        second_scope = scope.child()
+        first = first_scope.acquire(resource)
+        second = second_scope.acquire(resource)
+        self.assertIsNot(first, second)
         self.assertEqual(events, [("acquire", 1), ("acquire", 2)])
 
-        first.release()
-        second.release()
+        first_scope.close()
+        second_scope.close()
         self.assertEqual(
             events,
             [("acquire", 1), ("acquire", 2), ("release", 1), ("release", 2)],
@@ -45,19 +89,23 @@ class ResourceCompositionTests(unittest.TestCase):
 
     def test_map_changes_only_the_exposed_value(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         released: list[object] = []
         raw = object()
 
-        handle = Resource.make(lambda: raw, released.append).map(
+        value = scope.acquire(Resource.make(lambda: raw, released.append).map(
             lambda value: {"capability": value}
-        ).allocate(pool)
+        ))
 
-        self.assertIs(handle.value["capability"], raw)
-        handle.release()
+        self.assertIs(value["capability"], raw)
+        scope.close()
         self.assertEqual(released, [raw])
 
     def test_flat_map_acquires_in_order_and_releases_lifo(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
 
         outer = Resource.make(
@@ -71,9 +119,9 @@ class ResourceCompositionTests(unittest.TestCase):
             )
         )
 
-        handle = resource.allocate(pool)
-        self.assertEqual(handle.value, "server/connection")
-        handle.release()
+        value = scope.acquire(resource)
+        self.assertEqual(value, "server/connection")
+        scope.close()
         self.assertEqual(
             events,
             [
@@ -86,6 +134,8 @@ class ResourceCompositionTests(unittest.TestCase):
 
     def test_later_acquire_failure_rolls_back_registered_resources(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
 
         outer = Resource.make(
@@ -102,7 +152,7 @@ class ResourceCompositionTests(unittest.TestCase):
         )
 
         with self.assertRaises(ResourceAllocationError) as raised:
-            resource.allocate(pool)
+            scope.acquire(resource)
 
         self.assertIsInstance(raised.exception.cause, ValueError)
         self.assertEqual(raised.exception.release_report.pooled_count, 0)
@@ -113,6 +163,8 @@ class ResourceCompositionTests(unittest.TestCase):
 
     def test_cleanup_failure_during_rollback_does_not_replace_acquire_error(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
 
         def release_outer(_value: str) -> None:
             raise OSError("rollback cleanup failed")
@@ -127,7 +179,7 @@ class ResourceCompositionTests(unittest.TestCase):
         )
 
         with self.assertRaises(ResourceAllocationError) as raised:
-            resource.allocate(pool)
+            scope.acquire(resource)
 
         self.assertIsInstance(raised.exception.cause, ValueError)
         self.assertEqual(str(raised.exception.cause), "primary acquire failure")
@@ -138,6 +190,8 @@ class ResourceCompositionTests(unittest.TestCase):
 
     def test_projection_failure_rolls_back_original_resource(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
 
         def project(_value: str) -> str:
@@ -149,13 +203,15 @@ class ResourceCompositionTests(unittest.TestCase):
         ).map(project)
 
         with self.assertRaises(ResourceAllocationError) as raised:
-            resource.allocate(pool)
+            scope.acquire(resource)
 
         self.assertIsInstance(raised.exception.cause, LookupError)
         self.assertEqual(events, ["acquire", "release"])
 
     def test_single_make_failure_cannot_finalize_unreturned_internal_state(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         release_calls = 0
 
         def acquire() -> str:
@@ -166,12 +222,14 @@ class ResourceCompositionTests(unittest.TestCase):
             release_calls += 1
 
         with self.assertRaises(ResourceAllocationError):
-            Resource.make(acquire, release).allocate(pool)
+            scope.acquire(Resource.make(acquire, release))
 
         self.assertEqual(release_calls, 0)
 
     def test_control_flow_interruption_unwinds_registered_resources_then_propagates(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
         outer = Resource.make(
             lambda: events.append("acquire-outer") or "outer",
@@ -187,7 +245,7 @@ class ResourceCompositionTests(unittest.TestCase):
         )
 
         with self.assertRaises(ControlFlow):
-            resource.allocate(pool)
+            scope.acquire(resource)
         self.assertEqual(events, ["acquire-outer", "acquire-inner", "release-outer"])
 
 

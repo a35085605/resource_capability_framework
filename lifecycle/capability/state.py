@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from lifecycle.resource import ResourceHandle
+from lifecycle.resource import ResourceScope
 
 
 RequestT = TypeVar("RequestT")
@@ -19,27 +19,29 @@ class Idle:
 class Acquiring(Generic[RequestT]):
     generation: int
     request: RequestT
+    scope: ResourceScope
 
 
 @dataclass(frozen=True, slots=True)
 class Active(Generic[RequestT, CapabilityT]):
     generation: int
     request: RequestT
-    handle: ResourceHandle[CapabilityT]
+    capability: CapabilityT
+    scope: ResourceScope
 
 
 @dataclass(frozen=True, slots=True)
-class Releasing(Generic[RequestT, CapabilityT]):
+class Releasing(Generic[RequestT]):
     generation: int
     request: RequestT
-    handle: ResourceHandle[CapabilityT]
+    scope: ResourceScope
 
 
 LifecycleState: TypeAlias = (
     Idle
     | Acquiring[RequestT]
     | Active[RequestT, CapabilityT]
-    | Releasing[RequestT, CapabilityT]
+    | Releasing[RequestT]
 )
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import unittest
 
 from lifecycle.capability import (
@@ -9,7 +8,8 @@ from lifecycle.capability import (
     LifecycleOutcome,
     LifecyclePhase,
 )
-from lifecycle.resource import Resource, ResourceRecoveryPool
+from lifecycle.resource import Resource, ResourceRecoveryPool, ResourceScope, ScopeClosedError
+from tests.support import ThreadCall, wait
 
 
 class ControlFlow(BaseException):
@@ -19,9 +19,11 @@ class ControlFlow(BaseException):
 class CoordinatorTests(unittest.TestCase):
     def test_generation_and_not_executed_rules(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         coordinator = CapabilityLifecycleCoordinator(
             lambda request: Resource.pure(request.upper()),
-            pool,
+            scope=scope,
         )
 
         stale = coordinator.acquire(1, "a")
@@ -44,6 +46,8 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_started_acquire_failure_rolls_back_and_advances_generation(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
 
         def factory(_request: str) -> Resource[str]:
@@ -59,7 +63,7 @@ class CoordinatorTests(unittest.TestCase):
                 lambda _server: Resource.make(fail, lambda _value: None)
             )
 
-        coordinator = CapabilityLifecycleCoordinator(factory, pool)
+        coordinator = CapabilityLifecycleCoordinator(factory, scope=scope)
         result = coordinator.acquire(0, "request")
 
         self.assertEqual(result.outcome, LifecycleOutcome.ACQUIRE_FAILED)
@@ -74,25 +78,24 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_busy_states_do_not_execute_other_operations(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         acquire_started = threading.Event()
         allow_acquire = threading.Event()
-        result_holder = []
 
         def acquire_value() -> str:
             acquire_started.set()
-            allow_acquire.wait(2)
+            wait(allow_acquire)
             return "capability"
 
         coordinator = CapabilityLifecycleCoordinator(
             lambda _request: Resource.make(acquire_value, lambda _value: None),
-            pool,
+            scope=scope,
         )
 
-        thread = threading.Thread(
-            target=lambda: result_holder.append(coordinator.acquire(0, "a"))
-        )
-        thread.start()
-        self.assertTrue(acquire_started.wait(2))
+        self.addCleanup(allow_acquire.set)
+        operation = ThreadCall(lambda: coordinator.acquire(0, "a"))
+        wait(acquire_started)
         self.assertEqual(coordinator.read().phase, LifecyclePhase.ACQUIRING)
 
         busy_acquire = coordinator.acquire(0, "b")
@@ -101,12 +104,12 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(busy_release.outcome, LifecycleOutcome.NOT_EXECUTED)
 
         allow_acquire.set()
-        thread.join(2)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(result_holder[0].outcome, LifecycleOutcome.ACQUIRE_SUCCEEDED)
+        self.assertEqual(operation.succeeded(self).outcome, LifecycleOutcome.ACQUIRE_SUCCEEDED)
 
     def test_cleanup_failure_is_pooled_but_release_completes_and_next_generation_runs(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         acquired = 0
 
         def factory(request: str) -> Resource[str]:
@@ -120,7 +123,7 @@ class CoordinatorTests(unittest.TestCase):
 
             return Resource.make(acquire, release)
 
-        coordinator = CapabilityLifecycleCoordinator(factory, pool)
+        coordinator = CapabilityLifecycleCoordinator(factory, scope=scope)
         coordinator.acquire(0, "first")
         released = coordinator.release(0, "first")
 
@@ -133,8 +136,10 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(next_result.outcome, LifecycleOutcome.ACQUIRE_SUCCEEDED)
         self.assertEqual(next_result.snapshot.capability, "second-2")
 
-    def test_child_coordinator_is_bound_to_the_parent_handle_that_created_it(self) -> None:
+    def test_child_coordinator_is_bound_to_the_parent_activation_that_created_it(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
         physical_child_acquires = 0
 
@@ -144,7 +149,7 @@ class CoordinatorTests(unittest.TestCase):
                 lambda value: events.append(f"release-{value}"),
             )
 
-        parent = CapabilityLifecycleCoordinator(parent_factory, pool)
+        parent = CapabilityLifecycleCoordinator(parent_factory, scope=scope)
         parent.acquire(0, "one")
 
         def child_factory(parent_capability: str, request: str) -> Resource[str]:
@@ -193,9 +198,11 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_create_child_requires_matching_active_generation(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         coordinator = CapabilityLifecycleCoordinator(
             lambda request: Resource.pure(request),
-            pool,
+            scope=scope,
         )
         factory = lambda parent, child: Resource.pure((parent, child))
 
@@ -206,15 +213,80 @@ class CoordinatorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             coordinator.create_child(1, factory)
 
+    def test_closed_owner_rejects_acquire_before_invoking_factory(self) -> None:
+        scope = ResourceScope(ResourceRecoveryPool())
+        scope.close()
+        coordinator = CapabilityLifecycleCoordinator(
+            lambda _: self.fail("closed owner must not run factory"), scope=scope
+        )
+        result = coordinator.acquire(0, "request")
+        self.assertEqual(result.outcome, LifecycleOutcome.ACQUIRE_FAILED)
+        self.assertIsInstance(result.diagnostics.acquire_error, ScopeClosedError)
+        self.assertEqual(result.snapshot.generation, 1)
+        self.assertEqual(coordinator.acquire(0, "request").outcome, LifecycleOutcome.NOT_EXECUTED)
+
+    def test_invalid_factory_and_none_capability_fail_with_cleanup_diagnostics(self) -> None:
+        factory_error = ValueError("factory")
+        cleanup_error = OSError("cleanup")
+
+        def fail(error: BaseException) -> None:
+            raise error
+
+        factories = (
+            (lambda _: fail(factory_error), ValueError, ()),
+            (lambda _: object(), TypeError, ()),
+            (lambda _: Resource.make(lambda: None, lambda _: fail(cleanup_error)), TypeError, (cleanup_error,)),
+        )
+        for factory, error_type, cleanup_errors in factories:
+            with self.subTest(factory=factory):
+                pool = ResourceRecoveryPool()
+                scope = ResourceScope(pool)
+                coordinator = CapabilityLifecycleCoordinator(factory, scope=scope)
+                result = coordinator.acquire(0, "request")
+                self.assertEqual(result.outcome, LifecycleOutcome.ACQUIRE_FAILED)
+                self.assertEqual(result.snapshot.generation, 1)
+                self.assertEqual(result.snapshot.phase, LifecyclePhase.IDLE)
+                self.assertIsInstance(result.diagnostics.acquire_error, error_type)
+                self.assertEqual(result.diagnostics.release_report.errors, cleanup_errors)
+                self.assertEqual(result.diagnostics.release_report.pooled_count, len(cleanup_errors))
+                self.assertEqual(len(pool), len(cleanup_errors))
+                self.assertEqual(scope.close().errors, ())
+
+    def test_child_can_release_and_reacquire_without_stopping_parent_or_sibling(self) -> None:
+        scope = ResourceScope(ResourceRecoveryPool())
+        events: list[str] = []
+        parent = CapabilityLifecycleCoordinator(
+            lambda _: Resource.make(lambda: "server", events.append), scope=scope
+        )
+        parent.acquire(0, "request")
+
+        def factory(server: str, name: str) -> Resource[str]:
+            return Resource.make(lambda: f"{server}/{name}", events.append)
+
+        first = parent.create_child(0, factory)
+        second = parent.create_child(0, factory)
+        first.acquire(0, "first")
+        second.acquire(0, "second")
+        first.release(0, "first")
+        self.assertEqual(parent.read().capability, "server")
+        self.assertEqual(second.read().capability, "server/second")
+        self.assertEqual(first.acquire(1, "new-first").snapshot.capability, "server/new-first")
+        scope.close()
+        self.assertEqual(events, ["server/first", "server/new-first", "server/second", "server"])
+        self.assertEqual(first.read().generation, 2)
+        self.assertEqual(second.read().generation, 1)
+
     def test_release_control_flow_interruption_resets_generation_after_cleanup(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
 
         def release(_value: str) -> None:
             raise ControlFlow("stop")
 
         coordinator = CapabilityLifecycleCoordinator(
             lambda _request: Resource.make(lambda: "capability", release),
-            pool,
+            scope=scope,
         )
         coordinator.acquire(0, "request")
 
@@ -228,6 +300,8 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_acquire_control_flow_interruption_resets_generation_after_rollback(self) -> None:
         pool = ResourceRecoveryPool()
+        scope = ResourceScope(pool)
+        self.addCleanup(scope.close)
         events: list[str] = []
 
         outer = Resource.make(
@@ -242,7 +316,7 @@ class CoordinatorTests(unittest.TestCase):
             lambda _request: outer.flat_map(
                 lambda _value: Resource.make(interrupt, lambda _value: None)
             ),
-            pool,
+            scope=scope,
         )
 
         with self.assertRaises(ControlFlow):
