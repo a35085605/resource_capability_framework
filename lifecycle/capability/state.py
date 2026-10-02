@@ -3,96 +3,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeAlias, TypeVar
 
-from lifecycle.capability.result import LifecycleDiagnostics
-from lifecycle.capability.session import SessionOwner
-from lifecycle.capability.snapshot import CleanupOrigin
-from lifecycle.resource.result import ResourceCleanupStatus
+from lifecycle.resource import ResourceHandle
 
 
-GenerationT = TypeVar("GenerationT")
 RequestT = TypeVar("RequestT")
 CapabilityT = TypeVar("CapabilityT")
 
 
 @dataclass(frozen=True, slots=True)
-class Idle(Generic[GenerationT]):
-    generation: GenerationT
+class Idle:
+    generation: int
 
 
 @dataclass(frozen=True, slots=True)
-class Acquiring(Generic[GenerationT, RequestT]):
-    generation: GenerationT
+class Acquiring(Generic[RequestT]):
+    generation: int
     request: RequestT
 
 
 @dataclass(frozen=True, slots=True)
-class Active(Generic[GenerationT, RequestT, CapabilityT]):
-    generation: GenerationT
+class Active(Generic[RequestT, CapabilityT]):
+    generation: int
     request: RequestT
-    capability: CapabilityT
-    owner: SessionOwner
+    handle: ResourceHandle[CapabilityT]
 
 
 @dataclass(frozen=True, slots=True)
-class Releasing(Generic[GenerationT, RequestT]):
-    generation: GenerationT
+class Releasing(Generic[RequestT, CapabilityT]):
+    generation: int
     request: RequestT
-    owner: SessionOwner
-
-
-@dataclass(frozen=True, slots=True)
-class CleanupPending(Generic[GenerationT, RequestT]):
-    generation: GenerationT
-    request: RequestT
-    owner: SessionOwner
-    origin: CleanupOrigin
-    cleanup_status: ResourceCleanupStatus
-    diagnostics: LifecycleDiagnostics
-
-    def __post_init__(self) -> None:
-        if self.cleanup_status not in (
-            ResourceCleanupStatus.RETRYABLE,
-            ResourceCleanupStatus.BLOCKED,
-        ):
-            raise ValueError("CleanupPending requires RETRYABLE or BLOCKED status")
-
-
-@dataclass(frozen=True, slots=True)
-class FinalizationPending(Generic[GenerationT, RequestT]):
-    generation: GenerationT
-    request: RequestT
-    origin: CleanupOrigin
-    diagnostics: LifecycleDiagnostics
-
-
-@dataclass(frozen=True, slots=True)
-class Recovering(Generic[GenerationT, RequestT]):
-    generation: GenerationT
-    request: RequestT
-    origin: CleanupOrigin
-    diagnostics: LifecycleDiagnostics
-    owner: SessionOwner | None = None
-    cleanup_status: ResourceCleanupStatus | None = None
+    handle: ResourceHandle[CapabilityT]
 
 
 LifecycleState: TypeAlias = (
-    Idle[GenerationT]
-    | Acquiring[GenerationT, RequestT]
-    | Active[GenerationT, RequestT, CapabilityT]
-    | Releasing[GenerationT, RequestT]
-    | CleanupPending[GenerationT, RequestT]
-    | FinalizationPending[GenerationT, RequestT]
-    | Recovering[GenerationT, RequestT]
+    Idle
+    | Acquiring[RequestT]
+    | Active[RequestT, CapabilityT]
+    | Releasing[RequestT, CapabilityT]
 )
 
 
-__all__ = [
-    "Acquiring",
-    "Active",
-    "CleanupPending",
-    "FinalizationPending",
-    "Idle",
-    "LifecycleState",
-    "Recovering",
-    "Releasing",
-]
+__all__ = ["Acquiring", "Active", "Idle", "LifecycleState", "Releasing"]

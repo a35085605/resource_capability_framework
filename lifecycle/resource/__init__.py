@@ -1,41 +1,15 @@
-"""Contracts and result models for synchronous physical-resource management."""
+"""Structured synchronous resource ownership and finalization."""
 
-from lifecycle.resource.cleanup import cleanup_reverse
-from lifecycle.resource.contract import ResourceProvider, ResourceRequirementsResolver
-from lifecycle.resource.driver import (
-    RequirementAcquireFailed,
-    RequirementAcquireInterrupted,
-    RequirementAcquireResult,
-    RequirementAcquireSucceeded,
-    PhysicalResources,
-    ResourceDriver,
-)
-from lifecycle.resource.provider import ResolvedResourceProvider
-from lifecycle.resource.result import (
-    ResourceAcquireFailed,
-    ResourceAcquireInterrupted,
-    ResourceAcquireResult,
-    ResourceAcquireSucceeded,
-    ResourceCleanupResult,
-    ResourceCleanupStatus,
-)
+from lifecycle.resource.recovery import RecoveryEntry, ResourceRecoveryPool
+from lifecycle.resource.resource import Resource, ResourceHandle
+from lifecycle.resource.result import ReleaseReport, ResourceAllocationError
 
 
 __all__ = [
-    "cleanup_reverse",
-    "RequirementAcquireFailed",
-    "RequirementAcquireInterrupted",
-    "RequirementAcquireResult",
-    "RequirementAcquireSucceeded",
-    "PhysicalResources",
-    "ResourceAcquireFailed",
-    "ResourceAcquireInterrupted",
-    "ResourceAcquireResult",
-    "ResourceAcquireSucceeded",
-    "ResourceCleanupResult",
-    "ResourceCleanupStatus",
-    "ResolvedResourceProvider",
-    "ResourceDriver",
-    "ResourceProvider",
-    "ResourceRequirementsResolver",
+    "RecoveryEntry",
+    "ReleaseReport",
+    "Resource",
+    "ResourceAllocationError",
+    "ResourceHandle",
+    "ResourceRecoveryPool",
 ]

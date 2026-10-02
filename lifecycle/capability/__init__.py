@@ -1,43 +1,26 @@
-"""Contracts and result models for capability lifecycles."""
+"""Capability lifecycle fencing over structured Resource ownership."""
 
+from lifecycle.capability.coordinator import CapabilityLifecycleCoordinator
+from lifecycle.capability.diagnostics import LifecycleDiagnostics
 from lifecycle.capability.lifecycle import CapabilityLifecycle, LifecycleSnapshotReader
-from lifecycle.capability.projection import CapabilityProjector
 from lifecycle.capability.result import (
     AcquireResult,
-    LifecycleDiagnostics,
     LifecycleOutcome,
     LifecycleResult,
-    RecoveryResult,
     ReleaseResult,
 )
-from lifecycle.capability.session import (
-    CapabilitySessionFactory,
-    CleanupReport,
-    DefaultCapabilitySessionFactory,
-    PreparationFailed,
-    PreparedSession,
-    SessionOwner,
-)
-from lifecycle.capability.snapshot import CleanupOrigin, LifecyclePhase, LifecycleSnapshot
+from lifecycle.capability.snapshot import LifecyclePhase, LifecycleSnapshot
 
 
 __all__ = [
     "AcquireResult",
     "CapabilityLifecycle",
-    "CapabilityProjector",
-    "CapabilitySessionFactory",
-    "CleanupOrigin",
-    "CleanupReport",
-    "DefaultCapabilitySessionFactory",
+    "CapabilityLifecycleCoordinator",
     "LifecycleDiagnostics",
     "LifecycleOutcome",
     "LifecyclePhase",
     "LifecycleResult",
     "LifecycleSnapshot",
     "LifecycleSnapshotReader",
-    "PreparationFailed",
-    "PreparedSession",
-    "RecoveryResult",
     "ReleaseResult",
-    "SessionOwner",
 ]
