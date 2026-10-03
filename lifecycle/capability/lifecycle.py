@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol, TypeVar, runtime_checkable
 
+from lifecycle.effect import IO
 from lifecycle.capability.result import AcquireResult, ReleaseResult
 from lifecycle.capability.snapshot import LifecycleSnapshot
 from lifecycle.resource import Resource
@@ -16,7 +17,7 @@ ChildCapabilityT = TypeVar("ChildCapabilityT")
 
 @runtime_checkable
 class LifecycleSnapshotReader(Protocol[RequestT, CapabilityT]):
-    def read(self) -> LifecycleSnapshot[RequestT, CapabilityT]: ...
+    def read(self) -> IO[LifecycleSnapshot[RequestT, CapabilityT]]: ...
 
 
 @runtime_checkable
@@ -30,19 +31,19 @@ class CapabilityLifecycle(
         self,
         expected_generation: int,
         request: RequestT,
-    ) -> AcquireResult[RequestT, CapabilityT]: ...
+    ) -> IO[AcquireResult[RequestT, CapabilityT]]: ...
 
     def release(
         self,
         expected_generation: int,
         request: RequestT,
-    ) -> ReleaseResult[RequestT, CapabilityT]: ...
+    ) -> IO[ReleaseResult[RequestT, CapabilityT]]: ...
 
     def create_child(
         self,
         expected_generation: int,
         factory: Callable[[CapabilityT, ChildRequestT], Resource[ChildCapabilityT]],
-    ) -> "CapabilityLifecycle[ChildRequestT, ChildCapabilityT]": ...
+    ) -> IO[CapabilityLifecycle[ChildRequestT, ChildCapabilityT]]: ...
 
 
 __all__ = ["CapabilityLifecycle", "LifecycleSnapshotReader"]

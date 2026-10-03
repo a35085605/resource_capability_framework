@@ -1,1 +1,1 @@
-"""Internal lifecycle framework for resources and capabilities."""
+"""Resource and capability lifecycles composed with lazy synchronous IO."""

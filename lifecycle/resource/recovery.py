@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
+
+from lifecycle.effect import IO
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,12 +11,12 @@ class RecoveryEntry:
     """Detached finalization responsibility retained after a finalizer failed."""
 
     resource: object
-    release: Callable[[], None]
+    release: IO[None]
     error: BaseException
 
     def __post_init__(self) -> None:
-        if not callable(self.release):
-            raise TypeError("release must be callable")
+        if not isinstance(self.release, IO):
+            raise TypeError("release must be IO")
         if not isinstance(self.error, BaseException):
             raise TypeError("error must be a BaseException")
 
@@ -45,7 +46,7 @@ class ResourceRecoveryPool:
     def _accept(
         self,
         resource: object,
-        release: Callable[[], None],
+        release: IO[None],
         error: BaseException,
     ) -> None:
         entry = RecoveryEntry(resource, release, error)
